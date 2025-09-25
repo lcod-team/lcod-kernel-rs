@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
+use std::fs;
+use std::path::Path;
 
-use lcod_kernel_rs::compose::{Step, StepChildren};
+use lcod_kernel_rs::compose::{parse_compose, Step, StepChildren};
 use lcod_kernel_rs::{register_flow, run_compose, Context, Registry};
 
 fn create_registry() -> Registry {
@@ -12,7 +14,7 @@ fn create_registry() -> Registry {
     registry.register(
         "lcod://impl/echo@1",
         |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
-            Ok(json!({ "value": input.get("value").cloned().unwrap_or(Value::Null) }))
+            Ok(json!({ "val": input.get("value").cloned().unwrap_or(Value::Null) }))
         },
     );
 
@@ -23,7 +25,7 @@ fn create_registry() -> Registry {
                 .get("value")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| anyhow!("missing numeric value"))?;
-            Ok(json!({ "isEven": value % 2 == 0 }))
+            Ok(json!({ "ok": value % 2 == 0 }))
         },
     );
 
@@ -38,7 +40,7 @@ fn create_registry() -> Registry {
                 .get("limit")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| anyhow!("missing limit"))?;
-            Ok(json!({ "tooBig": value > limit }))
+            Ok(json!({ "ok": value > limit }))
         },
     );
 
@@ -70,7 +72,7 @@ fn foreach_collects_body_output() -> Result<()> {
     let mut body_inputs = Map::new();
     body_inputs.insert("value".to_string(), Value::String("$slot.item".to_string()));
     let mut body_out = Map::new();
-    body_out.insert("val".to_string(), Value::String("value".to_string()));
+    body_out.insert("val".to_string(), Value::String("val".to_string()));
     let body_step = simple_step("lcod://impl/echo@1", body_inputs, body_out);
 
     let mut children_map = std::collections::HashMap::new();
@@ -112,7 +114,7 @@ fn foreach_handles_continue_and_break() -> Result<()> {
     let mut inputs = Map::new();
     inputs.insert("value".to_string(), Value::String("$slot.item".to_string()));
     let mut out = Map::new();
-    out.insert("isEven".to_string(), Value::String("isEven".to_string()));
+    out.insert("isEven".to_string(), Value::String("ok".to_string()));
     steps.push(simple_step("lcod://impl/is_even@1", inputs, out));
 
     // if is even -> continue
@@ -134,7 +136,7 @@ fn foreach_handles_continue_and_break() -> Result<()> {
     gt_inputs.insert("value".to_string(), Value::String("$slot.item".to_string()));
     gt_inputs.insert("limit".to_string(), Value::Number(7.into()));
     let mut gt_out = Map::new();
-    gt_out.insert("tooBig".to_string(), Value::String("tooBig".to_string()));
+    gt_out.insert("tooBig".to_string(), Value::String("ok".to_string()));
     steps.push(simple_step("lcod://impl/gt@1", gt_inputs, gt_out));
 
     let mut cond_inputs = Map::new();
@@ -153,7 +155,7 @@ fn foreach_handles_continue_and_break() -> Result<()> {
     let mut echo_inputs = Map::new();
     echo_inputs.insert("value".to_string(), Value::String("$slot.item".to_string()));
     let mut echo_out = Map::new();
-    echo_out.insert("val".to_string(), Value::String("value".to_string()));
+    echo_out.insert("val".to_string(), Value::String("val".to_string()));
     steps.push(simple_step("lcod://impl/echo@1", echo_inputs, echo_out));
 
     let mut children_map = std::collections::HashMap::new();
@@ -179,6 +181,32 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap();
+    assert_eq!(numbers, json!([1, 3]).as_array().unwrap().clone());
+    Ok(())
+}
+
+#[test]
+fn foreach_ctrl_demo_from_spec_yaml() -> Result<()> {
+    let registry = create_registry();
+    let mut ctx = registry.context();
+
+    let path = Path::new("../lcod-spec/examples/flow/foreach_ctrl_demo/compose.yaml");
+    let yaml_text = fs::read_to_string(path)?;
+    let doc: serde_json::Value = serde_yaml::from_str(&yaml_text)?;
+    let compose_value = doc
+        .get("compose")
+        .cloned()
+        .ok_or_else(|| anyhow!("compose root missing"))?;
+    let steps = parse_compose(&compose_value)?;
+
+    let initial_state = json!({ "numbers": [1, 2, 3, 8, 9] });
+    let result = run_compose(&mut ctx, &steps, initial_state)?;
+    let numbers = result
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| anyhow!("results missing"))?;
+
     assert_eq!(numbers, json!([1, 3]).as_array().unwrap().clone());
     Ok(())
 }
