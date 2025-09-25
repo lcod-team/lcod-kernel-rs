@@ -6,8 +6,8 @@ use serde_json::{json, Map, Value};
 
 #[test]
 fn run_demo_compose() -> Result<()> {
-    let mut registry = Registry::new();
-    register_demo(&mut registry);
+    let registry = Registry::new();
+    register_demo(&registry);
     let steps = {
         let mut steps = Vec::new();
 
@@ -17,6 +17,8 @@ fn run_demo_compose() -> Result<()> {
             call: "lcod://core/localisation@1".to_string(),
             inputs: Map::new(),
             out: step1_out,
+            collect_path: None,
+            children: None,
         });
 
         let mut step2_in = Map::new();
@@ -27,6 +29,8 @@ fn run_demo_compose() -> Result<()> {
             call: "lcod://core/extract_city@1".to_string(),
             inputs: step2_in,
             out: step2_out,
+            collect_path: None,
+            children: None,
         });
 
         let mut step3_in = Map::new();
@@ -37,12 +41,15 @@ fn run_demo_compose() -> Result<()> {
             call: "lcod://core/weather@1".to_string(),
             inputs: step3_in,
             out: step3_out,
+            collect_path: None,
+            children: None,
         });
 
         steps
     };
 
-    let result = run_compose(&registry, &steps, Value::Object(Map::new()))?;
+    let mut ctx = registry.context();
+    let result = run_compose(&mut ctx, &steps, Value::Object(Map::new()))?;
     let temp = result.get("tempC").and_then(Value::as_i64).unwrap();
     assert_eq!(temp, 21);
     Ok(())
