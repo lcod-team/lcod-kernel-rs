@@ -1,0 +1,28 @@
+name: Rust Tests
+
+on:
+  push:
+    branches: ["main", "develop", "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout specs
+        uses: actions/checkout@v4
+        with:
+          repository: lcod-team/lcod-spec
+          path: lcod-spec
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          profile: minimal
+      - name: Run cargo test
+        run: cargo test
