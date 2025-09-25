@@ -49,8 +49,16 @@ fn list_from_input(input: &Value) -> Result<Vec<Value>> {
     if input.get("list").is_some() {
         return Err(anyhow!("flow/foreach: expected array for `list`"));
     }
-    if let Some(arr) = input.get("stream").and_then(Value::as_array) {
-        return Ok(arr.clone());
+    if let Some(stream_val) = input.get("stream") {
+        if let Some(arr) = stream_val.as_array() {
+            return Ok(arr.clone());
+        }
+        if stream_val.is_null() {
+            return Ok(Vec::new());
+        }
+        return Err(anyhow!(
+            "flow/foreach: stream must be an array in this runtime"
+        ));
     }
     Ok(Vec::new())
 }
@@ -92,16 +100,14 @@ pub fn flow_foreach(ctx: &mut Context, input: Value, meta: Option<Value>) -> Res
     let mut results = Vec::new();
 
     if items.is_empty() {
-        if let Some(path) = collect_path.as_deref() {
-            let mut slot_vars = Map::new();
-            slot_vars.insert("item".to_string(), Value::Null);
-            slot_vars.insert("index".to_string(), Value::Number(Number::from(-1)));
-            let else_state = ctx.run_slot("else", None, Some(Value::Object(slot_vars.clone())))?;
-            if let Some(val) = collect_path_value(path, &else_state, &slot_vars) {
+        let mut slot_vars = Map::new();
+        slot_vars.insert("item".to_string(), Value::Null);
+        slot_vars.insert("index".to_string(), Value::Number(Number::from(-1)));
+        let else_state = ctx.run_slot("else", None, Some(Value::Object(slot_vars.clone())));
+        if let (Some(path), Ok(state)) = (collect_path.as_deref(), else_state) {
+            if let Some(val) = collect_path_value(path, &state, &slot_vars) {
                 results.push(val);
             }
-        } else {
-            // No collect path means results stay empty
         }
         let mut out = Map::new();
         out.insert("results".to_string(), Value::Array(results));
@@ -113,7 +119,7 @@ pub fn flow_foreach(ctx: &mut Context, input: Value, meta: Option<Value>) -> Res
         slot_vars.insert("item".to_string(), item.clone());
         slot_vars.insert(
             "index".to_string(),
-            Value::Number(Number::from(index as u64)),
+            Value::Number(Number::from(index as i64)),
         );
         let slot_value = Value::Object(slot_vars.clone());
         match ctx.run_slot("body", None, Some(slot_value)) {

@@ -186,6 +186,91 @@ fn foreach_handles_continue_and_break() -> Result<()> {
 }
 
 #[test]
+fn foreach_executes_else_slot() -> Result<()> {
+    let registry = create_registry();
+    let mut ctx = registry.context();
+
+    let mut body_inputs = Map::new();
+    body_inputs.insert("value".to_string(), Value::String("$slot.item".to_string()));
+    let mut body_out = Map::new();
+    body_out.insert("val".to_string(), Value::String("val".to_string()));
+    let body_step = simple_step("lcod://impl/echo@1", body_inputs, body_out);
+
+    let mut else_inputs = Map::new();
+    else_inputs.insert("value".to_string(), Value::String("empty".to_string()));
+    let mut else_out = Map::new();
+    else_out.insert("val".to_string(), Value::String("val".to_string()));
+    let else_step = simple_step("lcod://impl/echo@1", else_inputs, else_out);
+
+    let mut children_map = std::collections::HashMap::new();
+    children_map.insert("body".to_string(), vec![body_step]);
+    children_map.insert("else".to_string(), vec![else_step]);
+
+    let mut inputs = Map::new();
+    inputs.insert("list".to_string(), Value::String("$.numbers".to_string()));
+
+    let mut out_map = Map::new();
+    out_map.insert("results".to_string(), Value::String("results".to_string()));
+
+    let step = Step {
+        call: "lcod://flow/foreach@1".to_string(),
+        inputs,
+        out: out_map,
+        collect_path: Some("$.val".to_string()),
+        children: Some(StepChildren::Map(children_map)),
+    };
+
+    let initial_state = json!({ "numbers": [] });
+    let result = run_compose(&mut ctx, &[step], initial_state)?;
+    let results = result
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap();
+    assert_eq!(results, json!(["empty"]).as_array().unwrap().clone());
+    Ok(())
+}
+
+#[test]
+fn foreach_consumes_stream_input() -> Result<()> {
+    let registry = create_registry();
+    let mut ctx = registry.context();
+
+    let mut body_inputs = Map::new();
+    body_inputs.insert("value".to_string(), Value::String("$slot.item".to_string()));
+    let mut body_out = Map::new();
+    body_out.insert("val".to_string(), Value::String("val".to_string()));
+    let body_step = simple_step("lcod://impl/echo@1", body_inputs, body_out);
+
+    let mut children_map = std::collections::HashMap::new();
+    children_map.insert("body".to_string(), vec![body_step]);
+
+    let mut inputs = Map::new();
+    inputs.insert("stream".to_string(), Value::String("$.numbers".to_string()));
+
+    let mut out_map = Map::new();
+    out_map.insert("results".to_string(), Value::String("results".to_string()));
+
+    let step = Step {
+        call: "lcod://flow/foreach@1".to_string(),
+        inputs,
+        out: out_map,
+        collect_path: Some("$.val".to_string()),
+        children: Some(StepChildren::Map(children_map)),
+    };
+
+    let initial_state = json!({ "numbers": [1, 2, 3] });
+    let result = run_compose(&mut ctx, &[step], initial_state)?;
+    let results = result
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap();
+    assert_eq!(results, json!([1, 2, 3]).as_array().unwrap().clone());
+    Ok(())
+}
+
+#[test]
 fn foreach_ctrl_demo_from_spec_yaml() -> Result<()> {
     let registry = create_registry();
     let mut ctx = registry.context();
@@ -208,5 +293,31 @@ fn foreach_ctrl_demo_from_spec_yaml() -> Result<()> {
         .ok_or_else(|| anyhow!("results missing"))?;
 
     assert_eq!(numbers, json!([1, 3]).as_array().unwrap().clone());
+    Ok(())
+}
+
+#[test]
+fn foreach_stream_demo_from_spec_yaml() -> Result<()> {
+    let registry = create_registry();
+    let mut ctx = registry.context();
+
+    let path = Path::new("../lcod-spec/examples/flow/foreach_stream_demo/compose.yaml");
+    let yaml_text = fs::read_to_string(path)?;
+    let doc: serde_json::Value = serde_yaml::from_str(&yaml_text)?;
+    let compose_value = doc
+        .get("compose")
+        .cloned()
+        .ok_or_else(|| anyhow!("compose root missing"))?;
+    let steps = parse_compose(&compose_value)?;
+
+    let initial_state = json!({ "numbers": [1, 2, 3] });
+    let result = run_compose(&mut ctx, &steps, initial_state)?;
+    let numbers = result
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| anyhow!("results missing"))?;
+
+    assert_eq!(numbers, json!([1, 2, 3]).as_array().unwrap().clone());
     Ok(())
 }
