@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
+use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 
 use lcod_kernel_rs::compose::{parse_compose, Step, StepChildren};
 use lcod_kernel_rs::{register_flow, run_compose, Context, Registry};
@@ -52,6 +53,26 @@ fn create_registry() -> Registry {
     );
 
     registry
+}
+
+fn spec_dir() -> Result<PathBuf> {
+    if let Ok(env_path) = env::var("LCOD_SPEC_PATH") {
+        let candidate = PathBuf::from(env_path);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    let candidates = [
+        PathBuf::from("lcod-spec"),
+        PathBuf::from("../lcod-spec"),
+        PathBuf::from("../../lcod-spec"),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(anyhow!("Unable to locate lcod-spec repository"))
 }
 
 fn simple_step(call: &str, inputs: Map<String, Value>, out: Map<String, Value>) -> Step {
@@ -275,8 +296,8 @@ fn foreach_ctrl_demo_from_spec_yaml() -> Result<()> {
     let registry = create_registry();
     let mut ctx = registry.context();
 
-    let path = Path::new("../lcod-spec/examples/flow/foreach_ctrl_demo/compose.yaml");
-    let yaml_text = fs::read_to_string(path)?;
+    let spec_path = spec_dir()?.join("examples/flow/foreach_ctrl_demo/compose.yaml");
+    let yaml_text = fs::read_to_string(spec_path)?;
     let doc: serde_json::Value = serde_yaml::from_str(&yaml_text)?;
     let compose_value = doc
         .get("compose")
@@ -301,8 +322,8 @@ fn foreach_stream_demo_from_spec_yaml() -> Result<()> {
     let registry = create_registry();
     let mut ctx = registry.context();
 
-    let path = Path::new("../lcod-spec/examples/flow/foreach_stream_demo/compose.yaml");
-    let yaml_text = fs::read_to_string(path)?;
+    let spec_path = spec_dir()?.join("examples/flow/foreach_stream_demo/compose.yaml");
+    let yaml_text = fs::read_to_string(spec_path)?;
     let doc: serde_json::Value = serde_yaml::from_str(&yaml_text)?;
     let compose_value = doc
         .get("compose")
