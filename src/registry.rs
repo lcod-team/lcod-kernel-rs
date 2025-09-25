@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+use crate::streams::StreamManager;
+
 pub trait SlotExecutor {
     fn run_slot(
         &mut self,
@@ -91,6 +93,7 @@ pub struct Context {
     registry: Arc<Mutex<RegistryInner>>,
     scope_depth: usize,
     run_slot_handler: Option<Box<dyn SlotExecutor + 'static>>,
+    streams: StreamManager,
 }
 
 impl Context {
@@ -99,6 +102,7 @@ impl Context {
             registry,
             scope_depth: 0,
             run_slot_handler: None,
+            streams: StreamManager::new(),
         }
     }
 
@@ -130,8 +134,8 @@ impl Context {
             .run_slot_handler
             .take()
             .ok_or_else(|| anyhow!("runSlot not available in this context"))?;
-        let local = local_state.unwrap_or_else(|| Value::Object(Default::default()));
-        let slot = slot_vars.unwrap_or_else(|| Value::Object(Default::default()));
+        let local = local_state.unwrap_or(Value::Null);
+        let slot = slot_vars.unwrap_or(Value::Null);
         let result = handler.run_slot(self, name, local, slot);
         self.run_slot_handler = Some(handler);
         result
@@ -145,5 +149,13 @@ impl Context {
         if self.scope_depth > 0 {
             self.scope_depth -= 1;
         }
+    }
+
+    pub fn streams_mut(&mut self) -> &mut StreamManager {
+        &mut self.streams
+    }
+
+    pub fn streams(&self) -> &StreamManager {
+        &self.streams
     }
 }

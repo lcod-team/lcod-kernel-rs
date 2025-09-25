@@ -110,12 +110,14 @@ fn normalize_children(children: Option<&StepChildren>) -> HashMap<String, Vec<St
 
 struct ComposeSlotHandler {
     slots: HashMap<String, Vec<Step>>,
+    parent_state: Map<String, Value>,
 }
 
 impl ComposeSlotHandler {
-    fn new(children: Option<&StepChildren>) -> Self {
+    fn new(children: Option<&StepChildren>, parent_state: &Map<String, Value>) -> Self {
         Self {
             slots: normalize_children(children),
+            parent_state: parent_state.clone(),
         }
     }
 }
@@ -128,7 +130,11 @@ impl SlotExecutor for ComposeSlotHandler {
         local_state: Value,
         slot_vars: Value,
     ) -> Result<Value> {
-        let local_map = value_to_object(local_state);
+        let local_map = if local_state.is_null() {
+            self.parent_state.clone()
+        } else {
+            value_to_object(local_state)
+        };
         let slot_map = value_to_object(slot_vars);
         let steps_opt = self.slots.get(name).or_else(|| self.slots.get("children"));
         let Some(steps) = steps_opt else {
@@ -162,7 +168,7 @@ fn run_steps(
         let meta = build_meta(step, slot);
 
         let slot_handler: Box<dyn SlotExecutor + 'static> =
-            Box::new(ComposeSlotHandler::new(step.children.as_ref()));
+            Box::new(ComposeSlotHandler::new(step.children.as_ref(), &state));
         let previous = ctx.replace_run_slot_handler(Some(slot_handler));
 
         ctx.push_scope();

@@ -38,8 +38,7 @@ pub fn flow_continue(_ctx: &mut Context, _input: Value, _meta: Option<Value>) ->
 pub fn flow_if(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
     let cond = input.get("cond").and_then(Value::as_bool).unwrap_or(false);
     let slot_name = if cond { "then" } else { "else" };
-    let _ = ctx.run_slot(slot_name, None, None)?;
-    Ok(Value::Object(Map::new()))
+    ctx.run_slot(slot_name, None, None)
 }
 
 fn list_from_input(input: &Value) -> Result<Vec<Value>> {
