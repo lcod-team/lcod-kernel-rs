@@ -5,52 +5,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use lcod_kernel_rs::compose::{parse_compose, Step, StepChildren};
-use lcod_kernel_rs::{register_flow, run_compose, Context, Registry};
+use lcod_kernel_rs::{register_demo_impls, register_flow, run_compose, Context, Registry};
 
 fn create_registry() -> Registry {
     let registry = Registry::new();
 
     register_flow(&registry);
-
-    registry.register(
-        "lcod://impl/echo@1",
-        |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
-            Ok(json!({ "val": input.get("value").cloned().unwrap_or(Value::Null) }))
-        },
-    );
-
-    registry.register(
-        "lcod://impl/is_even@1",
-        |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
-            let value = input
-                .get("value")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| anyhow!("missing numeric value"))?;
-            Ok(json!({ "ok": value % 2 == 0 }))
-        },
-    );
-
-    registry.register(
-        "lcod://impl/gt@1",
-        |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
-            let value = input
-                .get("value")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| anyhow!("missing numeric value"))?;
-            let limit = input
-                .get("limit")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| anyhow!("missing limit"))?;
-            Ok(json!({ "ok": value > limit }))
-        },
-    );
-
-    registry.register(
-        "lcod://impl/set@1",
-        |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
-            Ok(json!({ "value": input.get("value").cloned().unwrap_or(Value::Null) }))
-        },
-    );
+    register_demo_impls(&registry);
 
     register_stream_contracts(&registry);
 
