@@ -26,3 +26,7 @@ jobs:
           profile: minimal
       - name: Run cargo test
         run: cargo test
+      - name: Run spec fixtures
+        env:
+          SPEC_REPO_PATH: ${{ github.workspace }}/lcod-spec
+        run: cargo run --bin test_specs
