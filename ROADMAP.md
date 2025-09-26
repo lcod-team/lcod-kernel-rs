@@ -16,6 +16,7 @@
 - [x] M3-04a: Boot the Rust substrate skeleton (compose runner, registry, stream manager) and execute the spec streaming compose.
 - [ ] M3-04b: Implement the core contract matrix (`core/fs`, `core/http`, `core/stream`, `core/git`, `core/hash`, `core/parse`) against native Rust APIs.
 - [ ] M3-05: Join the cross-runtime conformance harness (diff Node vs Rust outputs on shared fixtures).
+  - [ ] Execute spec `tooling/test_checker@1` suites and publish parity reports
 - [ ] M3-06: Expose configurable sandbox hooks (`$api.run`, `$api.config`) for embedded logic.
 
 ## M4 — Packaging & distribution
