@@ -67,6 +67,10 @@ fn run_test(compose_path: &Path) -> Result<bool> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
+    if !success {
+        eprintln!("Report for {}: {}", compose_path.display(), report);
+    }
+
     Ok(success)
 }
 

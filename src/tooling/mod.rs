@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use base64::Engine;
 use serde_json::{json, Map, Value};
 
 use crate::compose::{parse_compose, run_compose};
@@ -76,7 +77,9 @@ fn set_path_value(target: &mut Value, path: &str, new_value: Value) {
             *cursor = Value::Object(Map::new());
         }
         let map = cursor.as_object_mut().expect("object expected");
-        cursor = map.entry((*key).to_string()).or_insert_with(|| Value::Object(Map::new()));
+        cursor = map
+            .entry((*key).to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
     }
     if let Some(obj) = cursor.as_object_mut() {
         obj.insert(parts[parts.len() - 1].to_string(), new_value);
@@ -94,7 +97,9 @@ fn decode_chunk(chunk: &str, encoding: &str) -> Result<Vec<u8>> {
 }
 
 fn register_streams(ctx: &mut Context, state: &mut Value, specs: &Value) -> Result<()> {
-    let list = specs.as_array().ok_or_else(|| anyhow!("streams must be an array"))?;
+    let list = specs
+        .as_array()
+        .ok_or_else(|| anyhow!("streams must be an array"))?;
     for spec in list {
         let target = spec
             .get("target")

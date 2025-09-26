@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod streams;
 
 use crate::registry::Registry;
 
@@ -7,4 +8,5 @@ use crate::registry::Registry;
 /// to specific domains (e.g. filesystem, http, ...).
 pub fn register_core(registry: &Registry) {
     fs::register_fs(registry);
+    streams::register_streams(registry);
 }
