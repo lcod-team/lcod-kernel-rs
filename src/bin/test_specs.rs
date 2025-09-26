@@ -76,7 +76,7 @@ fn run_test(compose_path: &Path) -> Result<bool> {
 
 fn main() -> Result<()> {
     let spec_root = locate_spec_repo()?;
-    let tests_root = spec_root.join("examples/tests");
+    let tests_root = spec_root.join("tests/spec");
     let entries = fs::read_dir(&tests_root)
         .with_context(|| format!("unable to read tests directory: {}", tests_root.display()))?;
 
