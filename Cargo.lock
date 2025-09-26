@@ -127,6 +127,7 @@ dependencies = [
  "base64",
  "hex",
  "humantime",
+ "libquickjs-sys",
  "quick-js",
  "serde",
  "serde_json",

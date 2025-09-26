@@ -91,3 +91,32 @@ fn script_run_slot_and_logs() {
         .expect("script logs");
     assert!(messages.iter().any(|entry| entry == "about to run slot"));
 }
+
+#[test]
+fn script_times_out() {
+    let registry = Registry::new();
+    register_tooling(&registry);
+
+    let mut ctx = registry.context();
+
+    let request = json!({
+        "timeoutMs": 10,
+        "source": "() => { while (true) {} }"
+    });
+
+    let result = ctx
+        .call("lcod://tooling/script@1", request, None)
+        .expect("script execution");
+
+    assert_eq!(result.get("success"), Some(&Value::Bool(false)));
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("timeout messages");
+    let joined = messages
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(joined.contains("timed out") || joined.contains("timeout"));
+}
