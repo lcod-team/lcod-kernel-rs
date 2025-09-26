@@ -17,8 +17,9 @@
 - [ ] M3-04b: Implement the core contract matrix (`core/fs`, `core/http`, `core/stream`, `core/git`, `core/hash`, `core/parse`) against native Rust APIs.
 - [ ] M3-05: Join the cross-runtime conformance harness (diff Node vs Rust outputs on shared fixtures).
   - [x] Execute spec `tooling/test_checker@1` suites via `cargo run --bin test_specs` (diff tooling still pending)
+  - [x] Provide Rust parity tests for `tooling/script@1` (call, runSlot, logging)
 - [ ] M3-06: Expose configurable sandbox hooks (`$api.run`, `$api.config`) for embedded logic.
-  - [ ] Implement `tooling/script@1` runtime using the embedded JS engine (currently sync-only, lacks `api.call`/`runSlot`)
+  - [ ] Implement `tooling/script@1` runtime using the embedded JS engine (timeout preemption & sandbox configuration TBD)
 
 ## M4 — Packaging & distribution
 - [ ] Package the Rust runtime as a reusable crate and binary (`lcod-kernel-rs-cli`).
