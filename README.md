@@ -10,10 +10,10 @@ See [`docs/runtime-rust.md`](https://github.com/lcod-team/lcod-spec/blob/main/do
 architecture blueprint and current contract coverage. In short:
 
 - Filesystem, hashing, parsing and stream contracts are implemented with parity tests.
-- HTTP and Git bindings are currently registered as stubs that return an explicit
-  “not yet implemented” error until the native bindings are wired (tracked in M3-04).
+- HTTP and Git bindings are implemented via `curl`/libgit2 and now power resolver-style
+  flows end-to-end (buffered + stream responses, refs/depth/subdir handling).
 - `register_resolver_axioms(&Registry)` aliases the available contracts under
-  their `axiom://` identifiers so the resolver example can run up to the HTTP/Git boundary.
+  their `axiom://` identifiers so the resolver example can run with the Rust substrate.
 
 ## Running the tests
 
