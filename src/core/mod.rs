@@ -1,5 +1,7 @@
 pub mod fs;
+pub mod git;
 pub mod hash;
+pub mod http;
 pub mod parse;
 pub mod streams;
 
@@ -10,7 +12,9 @@ use crate::registry::Registry;
 /// to specific domains (e.g. filesystem, http, ...).
 pub fn register_core(registry: &Registry) {
     fs::register_fs(registry);
+    git::register_git(registry);
     hash::register_hash(registry);
+    http::register_http(registry);
     parse::register_parse(registry);
     streams::register_streams(registry);
 }

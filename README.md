@@ -6,6 +6,15 @@ Rust reference implementation of the LCOD kernel. It exposes:
 - Compose runner with slot orchestration and stream handles.
 - Minimal tooling (demo registry, test harness) mirroring the JavaScript substrate.
 
+See [`docs/runtime-rust.md`](https://github.com/lcod-team/lcod-spec/blob/main/docs/runtime-rust.md) in the spec repository for the
+architecture blueprint and current contract coverage. In short:
+
+- Filesystem, hashing, parsing and stream contracts are implemented with parity tests.
+- HTTP and Git bindings are currently registered as stubs that return an explicit
+  “not yet implemented” error until the native bindings are wired (tracked in M3-04).
+- `register_resolver_axioms(&Registry)` aliases the available contracts under
+  their `axiom://` identifiers so the resolver example can run up to the HTTP/Git boundary.
+
 ## Running the tests
 
 ```bash

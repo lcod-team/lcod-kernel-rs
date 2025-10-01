@@ -13,4 +13,4 @@ pub use flow::register_flow;
 pub use impls::demo::register_demo_impls;
 pub use registry::{Context, Registry};
 pub use streams::StreamManager;
-pub use tooling::register_tooling;
+pub use tooling::{register_resolver_axioms, register_tooling};

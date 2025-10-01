@@ -9,6 +9,7 @@ use crate::compose::{parse_compose, run_compose};
 use crate::registry::{Context, Registry};
 
 mod common;
+mod resolver;
 mod script;
 
 const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
@@ -17,6 +18,8 @@ pub fn register_tooling(registry: &Registry) {
     registry.register(CONTRACT_TEST_CHECKER, test_checker);
     script::register_script_contract(registry);
 }
+
+pub use resolver::register_resolver_axioms;
 
 fn load_compose_from_path(path: &Path) -> Result<Vec<crate::compose::Step>> {
     let content = fs::read_to_string(path)
