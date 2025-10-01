@@ -14,6 +14,9 @@ base64 = "0.22"
 humantime = "2"
 hex = "0.4"
 quick-js = "0.4"
+sha2 = "0.10"
+csv = "1.3"
+toml = "0.8"
 libquickjs-sys = "0.9"
 
 [dev-dependencies]

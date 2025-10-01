@@ -132,3 +132,60 @@ fn fs_list_directory_entries() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn hash_sha256_computes_digest() -> Result<()> {
+    let mut ctx = context();
+    let res = ctx.call(
+        "lcod://contract/core/hash/sha256@1",
+        json!({ "data": "hello world", "encoding": "utf-8" }),
+        None,
+    )?;
+
+    assert_eq!(
+        res.get("hex"),
+        Some(&json!(
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        ))
+    );
+    assert_eq!(
+        res.get("base64"),
+        Some(&json!("uU0nuZNNPgilLlLX2n2r+sSE7+N6U4DukIj3rOLvzek="))
+    );
+    assert_eq!(res.get("bytes"), Some(&json!(11)));
+
+    Ok(())
+}
+
+#[test]
+fn parse_json_toml_and_csv() -> Result<()> {
+    let mut ctx = context();
+
+    let json_res = ctx.call(
+        "lcod://contract/core/parse/json@1",
+        json!({ "text": "{\"flag\":true,\"items\":[1,2,3]}" }),
+        None,
+    )?;
+    assert_eq!(json_res["value"]["flag"], json!(true));
+    assert_eq!(json_res["value"]["items"], json!([1, 2, 3]));
+
+    let toml_res = ctx.call(
+        "lcod://contract/core/parse/toml@1",
+        json!({ "text": "title = \"demo\"\n[owner]\nname = \"Alice\"" }),
+        None,
+    )?;
+    assert_eq!(toml_res["value"]["title"], json!("demo"));
+    assert_eq!(toml_res["value"]["owner"]["name"], json!("Alice"));
+
+    let csv_res = ctx.call(
+        "lcod://contract/core/parse/csv@1",
+        json!({ "text": "name,age\nBob,30\nAna,28", "header": true }),
+        None,
+    )?;
+    let rows = csv_res["rows"].as_array().expect("csv rows array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["name"], json!("Bob"));
+    assert_eq!(rows[1]["age"], json!("28"));
+
+    Ok(())
+}
