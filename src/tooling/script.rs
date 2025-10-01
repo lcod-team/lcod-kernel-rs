@@ -1,12 +1,10 @@
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
-use libquickjs_sys as q;
-use quick_js::{Context as JsContext, ExecutionError, JsValue};
+use quick_js::{Context as JsContext, JsValue};
 use serde_json::{json, Map, Value};
 
 use crate::registry::{Context, Registry};
@@ -127,13 +125,6 @@ fn execute_script(
 ) -> Result<Value> {
     let context = JsContext::new().map_err(|err| anyhow!("unable to create JS context: {err}"))?;
 
-    let runtime_ptr = runtime_ptr(&context);
-    let _guard = if timeout_ms > 0 {
-        Some(unsafe { InterruptGuard::new(runtime_ptr, Duration::from_millis(timeout_ms)) })
-    } else {
-        None
-    };
-
     let ctx_ptr_call = ctx as *mut Context as usize;
 
     context
@@ -228,18 +219,11 @@ fn execute_script(
     wrapper.push_str(");\n  const result = userFn(scope, api);\n  if (result && typeof result.then === 'function') {\n    return result.then(value => value);\n  }\n  return result;\n})();");
 
     let start = Instant::now();
-    let js_value = match context.eval(&wrapper) {
-        Ok(value) => value,
-        Err(ExecutionError::Internal(msg)) if msg.to_lowercase().contains("interrupt") => {
-            return Err(anyhow!("script execution timed out"));
-        }
-        Err(ExecutionError::Exception(val)) if is_interrupted_exception(&val) => {
-            return Err(anyhow!("script execution timed out"));
-        }
-        Err(err) => return Err(anyhow!("script execution failed: {err}")),
-    };
+    let js_value = context
+        .eval(&wrapper)
+        .map_err(|err| anyhow!("script execution failed: {err}"))?;
     let elapsed = start.elapsed();
-    if timeout_ms > 0 && elapsed > Duration::from_millis(timeout_ms) {
+    if timeout_ms > 0 && elapsed.as_millis() as u64 > timeout_ms {
         return Err(anyhow!(
             "script exceeded timeout ({} ms > {} ms)",
             elapsed.as_millis(),
@@ -248,65 +232,6 @@ fn execute_script(
     }
 
     Ok(js_value_to_json(js_value))
-}
-
-fn runtime_ptr(ctx: &JsContext) -> *mut q::JSRuntime {
-    unsafe {
-        let raw = ctx as *const JsContext as *const *mut q::JSRuntime;
-        *raw
-    }
-}
-
-struct InterruptState {
-    deadline: Instant,
-}
-
-struct InterruptGuard {
-    runtime: *mut q::JSRuntime,
-    state: *mut InterruptState,
-}
-
-impl InterruptGuard {
-    unsafe fn new(runtime: *mut q::JSRuntime, timeout: Duration) -> Self {
-        let state = Box::into_raw(Box::new(InterruptState {
-            deadline: Instant::now() + timeout,
-        }));
-        q::JS_SetInterruptHandler(runtime, Some(interrupt_handler), state as *mut c_void);
-        Self { runtime, state }
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        unsafe {
-            q::JS_SetInterruptHandler(self.runtime, None, std::ptr::null_mut());
-            if !self.state.is_null() {
-                drop(Box::from_raw(self.state));
-                self.state = std::ptr::null_mut();
-            }
-        }
-    }
-}
-
-unsafe extern "C" fn interrupt_handler(_rt: *mut q::JSRuntime, opaque: *mut c_void) -> i32 {
-    if opaque.is_null() {
-        return 0;
-    }
-    let state = &*(opaque as *const InterruptState);
-    if Instant::now() >= state.deadline {
-        1
-    } else {
-        0
-    }
-}
-
-fn is_interrupted_exception(value: &JsValue) -> bool {
-    match value {
-        JsValue::String(s) => s.to_lowercase().contains("interrupted"),
-        JsValue::Object(map) => map.values().any(is_interrupted_exception),
-        JsValue::Array(items) => items.iter().any(is_interrupted_exception),
-        _ => false,
-    }
 }
 
 fn js_value_to_json(value: JsValue) -> Value {
@@ -327,10 +252,6 @@ fn js_value_to_json(value: JsValue) -> Value {
             }
             Value::Object(map)
         }
-        #[cfg(feature = "chrono")]
-        JsValue::Date(dt) => Value::String(dt.to_rfc3339()),
-        #[cfg(feature = "bigint")]
-        JsValue::BigInt(big) => Value::String(big.to_string()),
         JsValue::__NonExhaustive => Value::Null,
     }
 }
