@@ -91,3 +91,59 @@ fn script_run_slot_and_logs() {
         .expect("script logs");
     assert!(messages.iter().any(|entry| entry == "about to run slot"));
 }
+
+#[test]
+fn script_run_tools_and_config() {
+    let registry = Registry::new();
+    register_tooling(&registry);
+    registry.register(
+        "lcod://impl/double@1",
+        |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
+            let value = input.get("value").and_then(Value::as_i64).unwrap_or(0);
+            Ok(json!({ "value": value * 2 }))
+        },
+    );
+
+    let mut ctx = registry.context();
+
+    let request = json!({
+        "source": "async ({ input }, api) => { const doubled = await api.run('double', { value: input.value }); const guarded = await api.run('guard', doubled); const entire = api.config(); return { success: guarded.success && entire.feature.enabled, result: guarded.value, config: entire }; }",
+        "bindings": {
+            "value": { "value": 4 }
+        },
+        "config": {
+            "feature": { "enabled": true },
+            "thresholds": { "min": 3 }
+        },
+        "tools": [
+            {
+                "name": "double",
+                "source": "async ({ value }, api) => { const res = await api.call('lcod://impl/double@1', { value }); api.log('tool.double', res.value); return { success: true, value: res.value }; }"
+            },
+            {
+                "name": "guard",
+                "source": "({ value }, api) => { const min = api.config('thresholds.min', 0); if (value < min) { return { success: false }; } return { success: true, value }; }"
+            }
+        ]
+    });
+
+    let result = ctx
+        .call("lcod://tooling/script@1", request, None)
+        .expect("script execution");
+
+    assert_eq!(result.get("success"), Some(&Value::Bool(true)));
+    assert_eq!(result.get("result"), Some(&Value::Number(serde_json::Number::from(8))));
+    let config = result.get("config").and_then(Value::as_object).expect("config object");
+    assert_eq!(
+        config
+            .get("feature")
+            .and_then(|v| v.get("enabled"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("tool log messages");
+    assert!(messages.iter().any(|entry| entry.as_str().unwrap_or("").contains("tool.double")));
+}

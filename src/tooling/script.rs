@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
@@ -12,6 +12,12 @@ use crate::registry::{Context, Registry};
 use super::common;
 
 const CONTRACT_ID: &str = "lcod://tooling/script@1";
+
+#[derive(Clone)]
+struct ToolDef {
+    source: String,
+    timeout_ms: u64,
+}
 
 pub(crate) fn register_script_contract(registry: &Registry) {
     registry.register(CONTRACT_ID, script_contract);
@@ -52,6 +58,11 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
         .get("meta")
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()));
+    let config = input
+        .get("config")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let tools = build_tools(input.get("tools"), timeout_ms)?;
 
     let scope = json!({
         "input": bindings,
@@ -60,8 +71,18 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
     });
 
     let messages = Rc::new(Mutex::new(Vec::new()));
+    let tools_rc = Arc::new(tools);
+    let config_rc = Arc::new(config);
 
-    let evaluation = execute_script(ctx, source, &scope, timeout_ms, Rc::clone(&messages));
+    let evaluation = execute_script(
+        ctx,
+        source,
+        ScriptInvocation::Main { scope: &scope },
+        timeout_ms,
+        Rc::clone(&messages),
+        tools_rc,
+        config_rc,
+    );
 
     match evaluation {
         Ok(mut result) => {
@@ -116,12 +137,19 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
     }
 }
 
+enum ScriptInvocation<'a> {
+    Main { scope: &'a Value },
+    Tool { payload: &'a Value },
+}
+
 fn execute_script(
     ctx: &mut Context,
     source: &str,
-    scope: &Value,
+    invocation: ScriptInvocation,
     timeout_ms: u64,
     messages: Rc<Mutex<Vec<String>>>,
+    tools: Arc<HashMap<String, ToolDef>>,
+    config: Arc<Value>,
 ) -> Result<Value> {
     let context = JsContext::new().map_err(|err| anyhow!("unable to create JS context: {err}"))?;
 
@@ -140,7 +168,6 @@ fn execute_script(
                     .ok_or_else(|| "api.call id must be a string".to_string())?;
                 let payload_js = values.next().unwrap_or(JsValue::Null);
                 let payload = js_value_to_json(payload_js);
-                // Safety: the pointer lives for the duration of the script execution
                 let host_ctx = unsafe { &mut *(ctx_ptr_call as *mut Context) };
                 host_ctx
                     .call(&id, payload, None)
@@ -193,6 +220,85 @@ fn execute_script(
         })
         .map_err(|err| anyhow!("failed to register api.log bridge: {err}"))?;
 
+    let config_for_callback = Arc::clone(&config);
+    context
+        .add_callback(
+            "__lcod_config",
+            move |args: quick_js::Arguments| -> Result<JsValue, String> {
+                let mut values = args.into_vec().into_iter();
+                let path_value = values.next();
+                let fallback = values.next().map(js_value_to_json);
+                if path_value.is_none()
+                    || matches!(
+                        path_value,
+                        Some(JsValue::Null) | Some(JsValue::Undefined)
+                    )
+                {
+                    return Ok(json_to_js_value(config_for_callback.as_ref()));
+                }
+                let path = path_value
+                    .unwrap()
+                    .into_string()
+                    .ok_or_else(|| "api.config path must be a string".to_string())?;
+                let normalized = normalize_config_path(&path);
+                let resolved = normalized
+                    .and_then(|p| resolve_path(config_for_callback.as_ref(), &p))
+                    .cloned();
+                match resolved {
+                    Some(value) => Ok(json_to_js_value(&value)),
+                    None => match fallback {
+                        Some(value) => Ok(json_to_js_value(&value)),
+                        None => Ok(JsValue::Undefined),
+                    },
+                }
+            },
+        )
+        .map_err(|err| anyhow!("failed to register api.config bridge: {err}"))?;
+
+    let tools_for_callback = Arc::clone(&tools);
+    let config_for_tools = Arc::clone(&config);
+    let messages_for_tools = Rc::clone(&messages);
+    let ctx_ptr_tool = ctx as *mut Context as usize;
+    context
+        .add_callback(
+            "__lcod_run",
+            move |args: quick_js::Arguments| -> Result<JsValue, String> {
+                let mut values = args.into_vec().into_iter();
+                let name = values
+                    .next()
+                    .ok_or_else(|| "api.run requires a tool name".to_string())?
+                    .into_string()
+                    .ok_or_else(|| "api.run name must be a string".to_string())?;
+                let payload = values
+                    .next()
+                    .map(js_value_to_json)
+                    .unwrap_or_else(|| Value::Null);
+                let options = values.next().map(js_value_to_json);
+                let tool = tools_for_callback
+                    .get(&name)
+                    .ok_or_else(|| format!("Unknown tool: {name}"))?
+                    .clone();
+                let timeout_override = options
+                    .as_ref()
+                    .and_then(|opt| opt.get("timeoutMs"))
+                    .and_then(Value::as_u64);
+                let effective_timeout = timeout_override.unwrap_or(tool.timeout_ms);
+                let host_ctx = unsafe { &mut *(ctx_ptr_tool as *mut Context) };
+                execute_script(
+                    host_ctx,
+                    &tool.source,
+                    ScriptInvocation::Tool { payload: &payload },
+                    effective_timeout,
+                    Rc::clone(&messages_for_tools),
+                    Arc::clone(&tools_for_callback),
+                    Arc::clone(&config_for_tools),
+                )
+                .map(|value| json_to_js_value(&value))
+                .map_err(|err| err.to_string())
+            },
+        )
+        .map_err(|err| anyhow!("failed to register api.run bridge: {err}"))?;
+
     context
         .eval(
             r#"
@@ -200,23 +306,33 @@ fn execute_script(
                 return {
                     call: (id, args) => Promise.resolve(globalThis.__lcod_call(id, args ?? {})),
                     runSlot: (name, state, slotVars) => Promise.resolve(globalThis.__lcod_runSlot(name, state ?? {}, slotVars ?? {})),
-                    log: (...values) => globalThis.__lcod_log(...values)
+                    log: (...values) => globalThis.__lcod_log(...values),
+                    config: (path, fallback) => globalThis.__lcod_config(path, fallback),
+                    run: (name, payload, options) => Promise.resolve(globalThis.__lcod_run(name, payload ?? {}, options ?? {}))
                 };
             };
         "#,
         )
         .map_err(|err| anyhow!("failed to initialise script API: {err}"))?;
 
-    let scope_json = serde_json::to_string(scope)?;
-    let scope_literal = serde_json::to_string(&scope_json)?;
+    let argument_literal = match invocation {
+        ScriptInvocation::Main { scope } => {
+            let json = serde_json::to_string(scope)?;
+            serde_json::to_string(&json)?
+        }
+        ScriptInvocation::Tool { payload } => {
+            let json = serde_json::to_string(payload)?;
+            serde_json::to_string(&json)?
+        }
+    };
 
     let mut wrapper = String::new();
     wrapper.push_str("(function() {\n");
-    wrapper.push_str(&format!("  const scope = JSON.parse({scope_literal});\n"));
+    wrapper.push_str(&format!("  const arg0 = JSON.parse({argument_literal});\n"));
     wrapper.push_str("  const api = globalThis.__lcod_make_api();\n");
     wrapper.push_str("  const userFn = (");
     wrapper.push_str(source);
-    wrapper.push_str(");\n  const result = userFn(scope, api);\n  if (result && typeof result.then === 'function') {\n    return result.then(value => value);\n  }\n  return result;\n})();");
+    wrapper.push_str(");\n  const result = userFn(arg0, api);\n  if (result && typeof result.then === 'function') {\n    return result.then(value => value);\n  }\n  return result;\n})();");
 
     let start = Instant::now();
     let js_value = context
@@ -316,6 +432,50 @@ fn format_js_value(value: JsValue) -> String {
         JsValue::BigInt(big) => big.to_string(),
         JsValue::__NonExhaustive => "[unknown]".to_string(),
     }
+}
+
+fn build_tools(spec: Option<&Value>, default_timeout: u64) -> Result<HashMap<String, ToolDef>> {
+    let mut map = HashMap::new();
+    let Some(array) = spec.and_then(Value::as_array) else {
+        return Ok(map);
+    };
+    for item in array {
+        let obj = item.as_object().ok_or_else(|| anyhow!("tool descriptors must be objects"))?;
+        let name = obj
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("tool entry missing name"))?;
+        let source = obj
+            .get("source")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("tool entry missing source"))?;
+        let timeout_ms = obj
+            .get("timeoutMs")
+            .and_then(Value::as_u64)
+            .unwrap_or(default_timeout);
+        map.insert(
+            name.to_string(),
+            ToolDef {
+                source: source.to_string(),
+                timeout_ms,
+            },
+        );
+    }
+    Ok(map)
+}
+
+fn normalize_config_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("$" ) {
+        if trimmed.starts_with("$.") {
+            return Some(trimmed.to_string());
+        }
+        return Some(format!("$.{}", &trimmed[1..]));
+    }
+    Some(format!("$.{}", trimmed))
 }
 
 fn build_bindings(state: &Value, bindings: Option<&Value>) -> Value {
