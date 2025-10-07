@@ -20,6 +20,8 @@ architecture blueprint and current contract coverage. In short:
 ```bash
 cargo test                 # kernel unit/integration tests
 cargo run --bin test_specs # execute shared spec fixtures from lcod-spec/tests/spec
+cargo run --bin run_compose -- --compose ../lcod-spec/examples/env/http_demo/compose.yaml --serve
+# run an LCOD compose (registers core/flow/tooling/http) and keep servers alive until Ctrl+C
 ```
 
 The spec fixtures require the `lcod-spec` repository to be accessible. By default

@@ -24,6 +24,7 @@ percent-encoding = "2"
 url = "=2.4.1"
 tempfile = "3"
 tiny_http = "0.12"
+ctrlc = "3"
 
 [dev-dependencies]
 ureq = "2"
