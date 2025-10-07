@@ -96,9 +96,9 @@ fn load_manifest(spec_root: &Path, manifest: &str) -> Result<Vec<(String, PathBu
         .with_context(|| format!("unable to read manifest: {}", manifest_path.display()))?;
     let entries: Value = serde_json::from_str(&content)
         .with_context(|| format!("invalid JSON manifest: {}", manifest_path.display()))?;
-    let items = entries.as_array().ok_or_else(|| anyhow::anyhow!(
-        "manifest must be an array"
-    ))?;
+    let items = entries
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("manifest must be an array"))?;
     let mut list = Vec::new();
     for item in items {
         let name = item

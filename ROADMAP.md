@@ -25,3 +25,6 @@
 ## M4 — Packaging & distribution
 - [ ] Package the Rust runtime as a reusable crate and binary (`lcod-kernel-rs-cli`).
 - [ ] Document release process, versioning and contract compatibility matrix.
+
+## M6 — Service demo
+- [x] M6-03 HTTP demo host: implement `env/http_host@0.1.0`, `project/http_app@0.1.0`, and parity tests serving LCOD routes.

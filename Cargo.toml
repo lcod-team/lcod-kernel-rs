@@ -23,5 +23,7 @@ curl = "0.4"
 percent-encoding = "2"
 url = "=2.4.1"
 tempfile = "3"
+tiny_http = "0.12"
 
 [dev-dependencies]
+ureq = "2"

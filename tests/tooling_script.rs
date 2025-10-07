@@ -132,8 +132,14 @@ fn script_run_tools_and_config() {
         .expect("script execution");
 
     assert_eq!(result.get("success"), Some(&Value::Bool(true)));
-    assert_eq!(result.get("result"), Some(&Value::Number(serde_json::Number::from(8))));
-    let config = result.get("config").and_then(Value::as_object).expect("config object");
+    assert_eq!(
+        result.get("result"),
+        Some(&Value::Number(serde_json::Number::from(8)))
+    );
+    let config = result
+        .get("config")
+        .and_then(Value::as_object)
+        .expect("config object");
     assert_eq!(
         config
             .get("feature")
@@ -145,5 +151,7 @@ fn script_run_tools_and_config() {
         .get("messages")
         .and_then(Value::as_array)
         .expect("tool log messages");
-    assert!(messages.iter().any(|entry| entry.as_str().unwrap_or("").contains("tool.double")));
+    assert!(messages
+        .iter()
+        .any(|entry| entry.as_str().unwrap_or("").contains("tool.double")));
 }

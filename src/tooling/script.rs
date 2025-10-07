@@ -229,10 +229,7 @@ fn execute_script(
                 let path_value = values.next();
                 let fallback = values.next().map(js_value_to_json);
                 if path_value.is_none()
-                    || matches!(
-                        path_value,
-                        Some(JsValue::Null) | Some(JsValue::Undefined)
-                    )
+                    || matches!(path_value, Some(JsValue::Null) | Some(JsValue::Undefined))
                 {
                     return Ok(json_to_js_value(config_for_callback.as_ref()));
                 }
@@ -440,7 +437,9 @@ fn build_tools(spec: Option<&Value>, default_timeout: u64) -> Result<HashMap<Str
         return Ok(map);
     };
     for item in array {
-        let obj = item.as_object().ok_or_else(|| anyhow!("tool descriptors must be objects"))?;
+        let obj = item
+            .as_object()
+            .ok_or_else(|| anyhow!("tool descriptors must be objects"))?;
         let name = obj
             .get("name")
             .and_then(Value::as_str)
@@ -469,7 +468,7 @@ fn normalize_config_path(path: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.starts_with("$" ) {
+    if trimmed.starts_with("$") {
         if trimmed.starts_with("$.") {
             return Some(trimmed.to_string());
         }

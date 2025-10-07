@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+use crate::http::manager::{HttpHostControl, HttpHostManager};
 use crate::streams::StreamManager;
 
 pub trait SlotExecutor {
@@ -28,7 +29,6 @@ impl RegistryInner {
     }
 }
 
-#[derive(Clone)]
 pub struct Registry {
     inner: Arc<Mutex<RegistryInner>>,
 }
@@ -36,6 +36,14 @@ pub struct Registry {
 impl Default for Registry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Clone for Registry {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -94,6 +102,7 @@ pub struct Context {
     scope_depth: usize,
     run_slot_handler: Option<Box<dyn SlotExecutor + 'static>>,
     streams: StreamManager,
+    http_hosts: HttpHostManager,
 }
 
 impl Context {
@@ -103,6 +112,7 @@ impl Context {
             scope_depth: 0,
             run_slot_handler: None,
             streams: StreamManager::new(),
+            http_hosts: HttpHostManager::new(),
         }
     }
 
@@ -157,5 +167,33 @@ impl Context {
 
     pub fn streams(&self) -> &StreamManager {
         &self.streams
+    }
+
+    pub fn register_http_host(&mut self, control: HttpHostControl) -> Value {
+        self.http_hosts.register(control)
+    }
+
+    pub fn stop_http_host(&mut self, handle: &Value) -> Result<Value> {
+        self.http_hosts.stop(handle)
+    }
+
+    pub fn stop_all_http_hosts(&mut self) {
+        self.http_hosts.stop_all();
+    }
+
+    pub fn fork(&self) -> Context {
+        Context::new(self.registry.clone())
+    }
+
+    pub fn registry_clone(&self) -> Registry {
+        Registry {
+            inner: self.registry.clone(),
+        }
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        self.http_hosts.stop_all();
     }
 }
