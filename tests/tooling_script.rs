@@ -155,3 +155,33 @@ fn script_run_tools_and_config() {
         .iter()
         .any(|entry| entry.as_str().unwrap_or("").contains("tool.double")));
 }
+
+#[test]
+fn script_imports_aliases() {
+    let registry = Registry::new();
+    register_tooling(&registry);
+    registry.register(
+        "lcod://impl/echo@1",
+        |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
+            Ok(json!({ "val": input.get("value").cloned().unwrap_or(Value::Null) }))
+        },
+    );
+
+    let mut ctx = registry.context();
+    let request = json!({
+        "source": "async ({ imports, input }, api) => { const first = await imports.echo({ value: input.value }); const second = await api.call('lcod://impl/echo@1', { value: first.val * 2 }); return { result: second.val }; }",
+        "input": { "value": 9 },
+        "imports": {
+            "echo": "lcod://impl/echo@1"
+        }
+    });
+
+    let result = ctx
+        .call("lcod://tooling/script@1", request, None)
+        .expect("script execution");
+
+    assert_eq!(
+        result.get("result"),
+        Some(&Value::Number(serde_json::Number::from(18)))
+    );
+}

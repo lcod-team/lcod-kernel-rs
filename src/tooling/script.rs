@@ -63,12 +63,15 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()));
     let tools = build_tools(input.get("tools"), timeout_ms)?;
+    let imports_map = build_imports(input.get("imports"));
+    let imports = Arc::new(imports_map);
 
-    let scope = json!({
-        "input": bindings,
-        "state": initial_state,
-        "meta": meta
-    });
+    let mut scope_map = Map::new();
+    scope_map.insert("input".to_string(), bindings);
+    scope_map.insert("state".to_string(), initial_state);
+    scope_map.insert("meta".to_string(), meta);
+    scope_map.insert("imports".to_string(), Value::Object(Map::new()));
+    let scope = Value::Object(scope_map);
 
     let messages = Rc::new(Mutex::new(Vec::new()));
     let tools_rc = Arc::new(tools);
@@ -82,6 +85,7 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
         Rc::clone(&messages),
         tools_rc,
         config_rc,
+        Arc::clone(&imports),
     );
 
     match evaluation {
@@ -150,6 +154,7 @@ fn execute_script(
     messages: Rc<Mutex<Vec<String>>>,
     tools: Arc<HashMap<String, ToolDef>>,
     config: Arc<Value>,
+    imports: Arc<HashMap<String, String>>,
 ) -> Result<Value> {
     let context = JsContext::new().map_err(|err| anyhow!("unable to create JS context: {err}"))?;
 
@@ -254,6 +259,7 @@ fn execute_script(
 
     let tools_for_callback = Arc::clone(&tools);
     let config_for_tools = Arc::clone(&config);
+    let imports_for_tools = Arc::clone(&imports);
     let messages_for_tools = Rc::clone(&messages);
     let ctx_ptr_tool = ctx as *mut Context as usize;
     context
@@ -289,12 +295,20 @@ fn execute_script(
                     Rc::clone(&messages_for_tools),
                     Arc::clone(&tools_for_callback),
                     Arc::clone(&config_for_tools),
+                    Arc::clone(&imports_for_tools),
                 )
                 .map(|value| json_to_js_value(&value))
                 .map_err(|err| err.to_string())
             },
         )
         .map_err(|err| anyhow!("failed to register api.run bridge: {err}"))?;
+
+    let imports_literal = serde_json::to_string(imports.as_ref())?;
+    context
+        .eval(&format!(
+            "globalThis.__lcod_importTargets = Object.freeze({imports_literal});"
+        ))
+        .map_err(|err| anyhow!("failed to initialise script imports: {err}"))?;
 
     context
         .eval(
@@ -307,6 +321,16 @@ fn execute_script(
                     config: (path, fallback) => globalThis.__lcod_config(path, fallback),
                     run: (name, payload, options) => Promise.resolve(globalThis.__lcod_run(name, payload ?? {}, options ?? {}))
                 };
+            };
+
+            globalThis.__lcod_make_imports = function () {
+                const targets = globalThis.__lcod_importTargets || {};
+                const output = {};
+                for (const key of Object.keys(targets)) {
+                    const target = targets[key];
+                    output[key] = (payload) => Promise.resolve(globalThis.__lcod_call(target, payload ?? {}));
+                }
+                return Object.freeze(output);
             };
         "#,
         )
@@ -327,6 +351,11 @@ fn execute_script(
     wrapper.push_str("(function() {\n");
     wrapper.push_str(&format!("  const arg0 = JSON.parse({argument_literal});\n"));
     wrapper.push_str("  const api = globalThis.__lcod_make_api();\n");
+    wrapper.push_str("  const imports = globalThis.__lcod_make_imports();\n");
+    wrapper.push_str("  if (arg0 && typeof arg0 === 'object') { arg0.imports = imports; }\n");
+    wrapper.push_str(
+        "  Object.defineProperty(api, 'imports', { value: imports, enumerable: true, writable: false });\n",
+    );
     wrapper.push_str("  const userFn = (");
     wrapper.push_str(source);
     wrapper.push_str(");\n  const result = userFn(arg0, api);\n  if (result && typeof result.then === 'function') {\n    return result.then(value => value);\n  }\n  return result;\n})();");
@@ -529,4 +558,19 @@ fn resolve_path<'a>(state: &'a Value, path: &str) -> Option<&'a Value> {
         cursor = cursor.get(part)?;
     }
     Some(cursor)
+}
+
+fn build_imports(spec: Option<&Value>) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Some(object) = spec.and_then(Value::as_object) else {
+        return map;
+    };
+    for (alias, target) in object {
+        if let Some(id) = target.as_str() {
+            if !alias.is_empty() && !id.is_empty() {
+                map.insert(alias.clone(), id.to_string());
+            }
+        }
+    }
+    map
 }
