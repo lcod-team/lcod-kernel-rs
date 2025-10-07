@@ -171,6 +171,9 @@ fn script_imports_aliases() {
     let request = json!({
         "source": "async ({ imports, input }, api) => { const first = await imports.echo({ value: input.value }); const second = await api.call('lcod://impl/echo@1', { value: first.val * 2 }); return { result: second.val }; }",
         "input": { "value": 9 },
+        "bindings": {
+            "value": { "path": "$.value" }
+        },
         "imports": {
             "echo": "lcod://impl/echo@1"
         }
