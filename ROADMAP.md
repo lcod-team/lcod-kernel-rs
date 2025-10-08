@@ -26,7 +26,7 @@
 - [ ] Package the Rust runtime as a reusable crate and binary (`lcod-kernel-rs-cli`).
 - [ ] Add `--assemble/--ship/--build` modes to the CLI mirroring the spec packaging tiers.
 - [ ] Document release process, versioning and contract compatibility matrix (map to assemble/ship/build outputs).
-- [ ] Partager le normaliseur de compose (sugar → forme canonique) pour rester aligné avec les autres runtimes.
+- [x] Share the compose normalizer (sugar → canonical form) to stay aligned with other runtimes.
 
 ## M6 — Service demo
 - [x] M6-03 HTTP demo host: implement `env/http_host@0.1.0`, `project/http_app@0.1.0`, and parity tests serving LCOD routes.

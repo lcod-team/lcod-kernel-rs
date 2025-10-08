@@ -7,14 +7,15 @@ fn parse_compose_expands_identity_inputs_and_outputs() {
         {
             "call": "lcod://impl/echo@1",
             "in": {
-                "foo": "-",
+                "foo": "=",
                 "nested": { "path": "value" }
             },
             "out": {
-                "bar": "-"
+                "bar": "="
             }
         }
-    ])).expect("compose parsed");
+    ]))
+    .expect("compose parsed");
 
     let step = &steps[0];
     assert_eq!(step.inputs.get("foo").unwrap(), "$.foo");
@@ -26,18 +27,19 @@ fn parse_compose_normalizes_children() {
     let steps = parse_compose(&json!([
         {
             "call": "lcod://flow/if@1",
-            "in": { "cond": "-" },
+            "in": { "cond": "=" },
             "children": {
                 "then": [
                     {
                         "call": "lcod://impl/echo@1",
-                        "in": { "value": "-" },
-                        "out": { "result": "-" }
+                        "in": { "value": "=" },
+                        "out": { "result": "=" }
                     }
                 ]
             }
         }
-    ])).expect("compose parsed");
+    ]))
+    .expect("compose parsed");
 
     let step = &steps[0];
     assert_eq!(step.inputs.get("cond").unwrap(), "$.cond");
@@ -54,4 +56,44 @@ fn parse_compose_normalizes_children() {
     } else {
         panic!("missing children");
     }
+}
+
+#[test]
+fn parse_compose_handles_spreads_and_optional_inputs() {
+    let steps = parse_compose(&json!([
+        {
+            "call": "lcod://impl/echo@1",
+            "in": {
+                "...": "$.payload",
+                "...lock": "=",
+                "configPath?": "=",
+                "required": "="
+            },
+            "out": {
+                "result": "="
+            }
+        }
+    ]))
+    .expect("compose parsed");
+
+    let step = &steps[0];
+    let spreads = step
+        .inputs
+        .get("__lcod_spreads__")
+        .and_then(|v| v.as_array())
+        .expect("spreads");
+    assert_eq!(
+        spreads,
+        &vec![
+            json!({ "source": "$.payload" }),
+            json!({ "source": "$.lock" })
+        ]
+    );
+    let config = step.inputs.get("configPath").expect("configPath entry");
+    assert_eq!(
+        config,
+        &json!({ "__lcod_optional__": true, "value": "$.configPath" })
+    );
+    assert_eq!(step.inputs.get("required").unwrap(), "$.required");
+    assert_eq!(step.out.get("result").unwrap(), "result");
 }
