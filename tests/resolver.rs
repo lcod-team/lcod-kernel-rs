@@ -24,7 +24,10 @@ fn resolver_compose_candidates() -> Vec<PathBuf> {
     );
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
+            .join("..")
+            .join("lcod-spec")
+            .join("examples")
+            .join("tooling")
             .join("resolver")
             .join("compose.yaml"),
     );
