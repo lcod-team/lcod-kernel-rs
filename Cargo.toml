@@ -5,6 +5,11 @@ edition = "2021"
 license = "MIT"
 description = "LCOD kernel reference implementation in Rust"
 
+[features]
+default = []
+chrono = []
+bigint = []
+
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

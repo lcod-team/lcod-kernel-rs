@@ -1,0 +1,430 @@
+compose:
+  - call: lcod://axiom/path/join@1
+    in:
+      base: $.projectPath
+      segment: "lcp.toml"
+    out:
+      descriptorPath: path
+
+  - call: lcod://axiom/fs/read-file@1
+    in:
+      path: $.descriptorPath
+      encoding: "utf-8"
+    out:
+      descriptorText: data
+
+  - call: lcod://axiom/toml/parse@1
+    in:
+      text: $.descriptorText
+    out:
+      descriptor: value
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => ({
+          hasConfigPath: typeof state.configPath === 'string' && state.configPath.trim().length > 0
+        })
+      input:
+        configPath: $.configPath
+    out:
+      hasConfigPath: hasConfigPath
+
+  - call: lcod://flow/if@1
+    in:
+      cond: $.hasConfigPath
+    out:
+      configText: configText
+    children:
+      then:
+        - call: lcod://axiom/fs/read-file@1
+          in:
+            path: $.configPath
+            encoding: "utf-8"
+          out:
+            configText: data
+      else:
+        - call: lcod://axiom/path/join@1
+          in:
+            base: $.projectPath
+            segment: "resolve.config.json"
+          out:
+            defaultConfigPath: path
+        - call: lcod://tooling/script@1
+          in:
+            source: |
+              async ({ state, imports }) => {
+                const fallback = '{"sources":{}}';
+                const path = typeof state?.defaultPath === 'string' ? state.defaultPath : null;
+                if (!path) return { configText: fallback };
+                try {
+                  const file = await imports.fsReadFile({ path, encoding: 'utf-8' });
+                  return { configText: file?.data ?? fallback };
+                } catch (err) {
+                  return { configText: fallback, warning: `Failed to read ${path}: ${err.message}` };
+                }
+              }
+            input:
+              defaultPath: $.defaultConfigPath
+            imports:
+              fsReadFile: lcod://axiom/fs/read-file@1
+          out:
+            configText: configText
+            configWarning: warning
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => ({
+          hasConfigText: typeof state.configText === 'string' && state.configText.trim().length > 0
+        })
+      input:
+        configText: $.configText
+    out:
+      hasConfigText: hasConfigText
+
+  - call: lcod://flow/if@1
+    in:
+      cond: $.hasConfigText
+    out:
+      resolverConfig: resolverConfig
+    children:
+      then:
+        - call: lcod://axiom/json/parse@1
+          in:
+            text: $.configText
+          out:
+            resolverConfig: value
+      else:
+        - call: lcod://impl/set@1
+          in:
+            resolverConfig:
+              sources: {}
+          out:
+            resolverConfig: resolverConfig
+
+  - call: lcod://flow/if@1
+    in:
+      cond: $.outputPath
+    children:
+      then:
+        - call: lcod://impl/set@1
+          in:
+            lockPath: $.outputPath
+          out:
+            lockPath: lockPath
+      else:
+        - call: lcod://axiom/path/join@1
+          in:
+            base: $.projectPath
+            segment: "lcp.lock"
+          out:
+            lockPath: path
+    out:
+      lockPath: lockPath
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => ({
+          hasCacheOverride: typeof state.cacheOverride === 'string' && state.cacheOverride.trim().length > 0
+        })
+      input:
+        cacheOverride: $.cacheDir
+    out:
+      hasCacheOverride: hasCacheOverride
+
+  - call: lcod://flow/if@1
+    in:
+      cond: $.hasCacheOverride
+    out:
+      cacheDir: cacheDir
+    children:
+      then:
+        - call: lcod://impl/set@1
+          in:
+            cacheDir: $.cacheDir
+          out:
+            cacheDir: cacheDir
+      else:
+        - call: lcod://tooling/resolver/cache-dir@1
+          in: {}
+          out:
+            cacheDir: cacheDir
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => ({
+          rootId: typeof state.descriptor?.id === 'string' ? state.descriptor.id : null
+        })
+      input:
+        descriptor: $.descriptor
+    out:
+      rootId: rootId
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => {
+          const warnings = [];
+          if (state.configWarning) {
+            warnings.push(state.configWarning);
+          }
+          return { warnings };
+        }
+      input:
+        configWarning: $.configWarning
+    out:
+      warnings: warnings
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => ({
+          resolverConfig: state.resolverConfig ?? {},
+          cacheDir: state.cacheDir ?? null,
+          rootId: state.rootId ?? null,
+          warnings: Array.isArray(state.warnings) ? state.warnings : []
+        })
+      input:
+        resolverConfig: $.resolverConfig
+        cacheDir: $.cacheDir
+        rootId: $.rootId
+        warnings: $.warnings
+    out:
+      resolverConfig: resolverConfig
+      cacheDir: cacheDir
+      rootId: rootId
+      warnings: warnings
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state, imports }) => {
+          const warnings = [...state.warnings];
+          const projectPath = state.projectPath;
+          if (typeof projectPath !== 'string' || !projectPath) {
+            throw new Error('projectPath is required');
+          }
+
+          const resolveDependency = async (id, stack = [], preload = undefined) => {
+            let descriptorText = preload?.descriptorText;
+            let descriptor = preload?.descriptor;
+
+            if (!descriptorText) {
+              const path = await imports.pathJoin({
+                base: projectPath,
+                segment: `lcod_modules/${id.replace(/[^a-zA-Z0-9_.-]/g, '_')}/lcp.toml`
+              });
+              try {
+                const file = await imports.fsReadFile({ path, encoding: 'utf-8' });
+                descriptorText = file?.data;
+              } catch (err) {
+                throw new Error(`Unable to read descriptor for ${id}: ${err.message}`);
+              }
+            }
+
+            if (!descriptor) {
+              const parsed = await imports.tomlParse({ text: descriptorText });
+              descriptor = parsed?.value;
+              if (!descriptor) {
+                throw new Error(`Invalid descriptor for ${id}`);
+              }
+            }
+
+            const record = {
+              id,
+              source: preload?.source ?? { type: 'registry', id },
+              dependencies: []
+            };
+
+            try {
+              const hash = await imports.hash({ data: descriptorText, encoding: 'utf-8' });
+              if (hash?.hex) {
+                record.integrity = `sha256-${hash.hex}`;
+              }
+            } catch (err) {
+              warnings.push(`Failed to compute integrity for ${id}: ${err.message}`);
+            }
+
+            const sources = state.resolverConfig?.sources ?? {};
+            const rule = sources[id];
+            if (rule && typeof rule === 'object') {
+              if (rule.type === 'path' && typeof rule.path === 'string') {
+                record.source = { type: 'path', path: rule.path };
+              } else if (rule.type === 'git' && typeof rule.url === 'string') {
+                try {
+                  const checkout = await imports.gitClone({
+                    url: rule.url,
+                    branch: rule.branch ?? 'main',
+                    revision: rule.revision ?? null
+                  });
+                  record.source = {
+                    type: 'git',
+                    url: rule.url,
+                    branch: checkout.branch,
+                    revision: checkout.revision
+                  };
+                  descriptorText = checkout.descriptor?.text ?? descriptorText;
+                  descriptor = checkout.descriptor?.value ?? descriptor;
+                } catch (err) {
+                  throw new Error(`Failed to clone ${rule.url}: ${err.message}`);
+                }
+              } else if (rule.type === 'http' && typeof rule.url === 'string') {
+                try {
+                  const downloaded = await imports.httpDownload({
+                    url: rule.url,
+                    cacheDir: state.cacheDir ?? undefined
+                  });
+                  if (typeof downloaded?.path === 'string') {
+                    record.source = {
+                      type: 'http',
+                      url: rule.url
+                    };
+                    descriptorText = await imports.fsReadFile({
+                      path: downloaded.path,
+                      encoding: 'utf-8'
+                    }).then((file) => file.data);
+                    descriptor = (await imports.tomlParse({ text: descriptorText }))?.value ?? descriptor;
+                  }
+                } catch (err) {
+                  throw new Error(`Failed to download ${rule.url}: ${err.message}`);
+                }
+              }
+            }
+
+            const dependencies = descriptor?.deps?.requires ?? [];
+            const childIds = Array.isArray(dependencies) ? dependencies : [];
+            for (const child of childIds) {
+              if (typeof child !== 'string' || !child) continue;
+              if (stack.includes(child)) {
+                warnings.push(`Cycle detected: ${[...stack, child].join(' -> ')}`);
+                continue;
+              }
+              try {
+                const childRecord = await resolveDependency(child, [...stack, id]);
+                if (childRecord) record.dependencies.push(childRecord);
+              } catch (err) {
+                warnings.push(`Failed to resolve ${child} for ${id}: ${err.message}`);
+              }
+            }
+
+            return record;
+          };
+
+          const rootId = typeof state?.rootId === 'string' && state.rootId
+            ? state.rootId
+            : (state?.rootDescriptor && state.rootDescriptor.id);
+          const preloadRoot = {
+            descriptor: state?.rootDescriptor,
+            descriptorText: state?.rootDescriptorText,
+            source: { type: 'path', path: projectPath }
+          };
+
+          const root = rootId
+            ? await resolveDependency(rootId, [], preloadRoot)
+            : {
+                id: undefined,
+                source: { type: 'path', path: projectPath },
+                dependencies: []
+              };
+          if (!rootId) {
+            warnings.push('Root descriptor is missing an id');
+          }
+
+          return {
+            root,
+            warnings
+          };
+        }
+      input:
+        projectPath: $.projectPath
+        resolverConfig: $.resolverConfig
+        cacheDir: $.cacheDir
+        warnings: $.warnings
+        rootId: $.rootId
+        rootDescriptor: $.descriptor
+        rootDescriptorText: $.descriptorText
+      imports:
+        pathJoin: lcod://axiom/path/join@1
+        fsReadFile: lcod://axiom/fs/read-file@1
+        tomlParse: lcod://axiom/toml/parse@1
+        hash: lcod://contract/core/hash/sha256@1
+        gitClone: lcod://contract/core/git/clone@1
+        httpDownload: lcod://axiom/http/download@1
+        cacheDir: lcod://tooling/resolver/cache-dir@1
+    out:
+      resolverOutput: $
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => {
+          const root = state.root ?? {};
+          return {
+            dependencyGraph: Array.isArray(root.dependencies) ? root.dependencies : [],
+            rootIntegrity: root.integrity || null,
+            collectedWarnings: Array.isArray(state.warnings) ? state.warnings : []
+          };
+        }
+      input:
+        root: $.resolverOutput.root
+        warnings: $.resolverOutput.warnings
+    out:
+      dependencyGraph: dependencyGraph
+      rootIntegrity: rootIntegrity
+      collectedWarnings: collectedWarnings
+
+  - call: lcod://tooling/script@1
+    in:
+      source: |
+        async ({ state }) => {
+          const descriptor = state.descriptor ?? {};
+          const component = {
+            id: descriptor.id,
+            resolved: descriptor.id,
+            source: { type: 'path', path: '.' },
+            dependencies: Array.isArray(state.dependencyGraph) ? state.dependencyGraph : []
+          };
+          if (state.rootIntegrity) component.integrity = state.rootIntegrity;
+          return {
+            lockDocument: {
+              schemaVersion: '1.0',
+              resolverVersion: '0.1.0',
+              components: [component],
+              warnings: Array.isArray(state.collectedWarnings) ? state.collectedWarnings : []
+            }
+          };
+        }
+      input:
+        descriptor: $.descriptor
+        dependencyGraph: $.dependencyGraph
+        rootIntegrity: $.rootIntegrity
+        collectedWarnings: $.collectedWarnings
+    out:
+      lockDocument: lockDocument
+
+  - call: lcod://axiom/toml/stringify@1
+    in:
+      value: $.lockDocument
+    out:
+      lockText: text
+
+  - call: lcod://axiom/fs/write-file@1
+    in:
+      path: $.lockPath
+      data: $.lockText
+      createParents: true
+    out:
+      ok: wrote
+
+  - call: lcod://impl/set@1
+    in:
+      lockPath: $.lockPath
+      components: $.lockDocument.components
+      warnings: $.lockDocument.warnings
+    out:
+      lockPath: lockPath
+      components: components
+      warnings: warnings

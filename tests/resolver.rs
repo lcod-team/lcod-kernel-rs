@@ -4,21 +4,59 @@ use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::registry::Registry;
 use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
 use serde_json::json;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
-fn load_compose() -> Vec<Step> {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("lcod-resolver")
-        .join("compose.yaml");
-    let text = fs::read_to_string(base).expect("compose file");
-    let yaml: serde_json::Value = serde_yaml::from_str(&text).expect("valid compose yaml");
-    let steps_value = yaml.get("compose").cloned().expect("compose array present");
-    parse_compose(&steps_value).expect("parse compose steps")
+fn resolver_compose_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = env::var("LCOD_RESOLVER_COMPOSE") {
+        if !path.trim().is_empty() {
+            candidates.push(PathBuf::from(path));
+        }
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("lcod-resolver")
+            .join("compose.yaml"),
+    );
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("resolver")
+            .join("compose.yaml"),
+    );
+    candidates
 }
 
+fn load_compose() -> Vec<Step> {
+    let candidates = resolver_compose_candidates();
+    for candidate in &candidates {
+        match fs::read_to_string(candidate) {
+            Ok(text) => {
+                let yaml: serde_json::Value = serde_yaml::from_str(&text).expect("valid compose yaml");
+                let steps_value = yaml.get("compose").cloned().expect("compose array present");
+                return parse_compose(&steps_value).expect("parse compose steps");
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(err) => {
+                panic!("failed to read {}: {}", candidate.display(), err);
+            }
+        }
+    }
+    panic!(
+        "unable to locate resolver compose.yaml. checked: {}",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
 fn new_registry() -> Registry {
     let registry = Registry::new();
     register_core(&registry);
