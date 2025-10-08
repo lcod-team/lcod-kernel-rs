@@ -6,6 +6,12 @@ use serde_json::{Map, Value};
 
 use crate::registry::{Context, SlotExecutor};
 
+#[derive(Copy, Clone)]
+enum MappingKind {
+    Input,
+    Output,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Step {
     pub call: String,
@@ -24,6 +30,56 @@ pub struct Step {
 pub enum StepChildren {
     List(Vec<Step>),
     Map(HashMap<String, Vec<Step>>),
+}
+
+fn normalize_value(value: &Value, key: &str, kind: MappingKind, depth: usize) -> Value {
+    match value {
+        Value::String(s) if s == "-" && depth == 0 => match kind {
+            MappingKind::Input => Value::String(format!("$.{key}")),
+            MappingKind::Output => Value::String(key.to_string()),
+        },
+        Value::Object(map) => Value::Object(normalize_map(map, kind, depth + 1)),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| match item {
+                    Value::Object(map) => Value::Object(normalize_map(map, kind, depth + 1)),
+                    _ => item.clone(),
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn normalize_map(map: &Map<String, Value>, kind: MappingKind, depth: usize) -> Map<String, Value> {
+    let mut normalized = Map::new();
+    for (key, value) in map {
+        normalized.insert(key.clone(), normalize_value(value, key, kind, depth));
+    }
+    normalized
+}
+
+fn normalize_step(mut step: Step) -> Step {
+    if !step.inputs.is_empty() {
+        step.inputs = normalize_map(&step.inputs, MappingKind::Input, 0);
+    }
+    if !step.out.is_empty() {
+        step.out = normalize_map(&step.out, MappingKind::Output, 0);
+    }
+
+    if let Some(children) = step.children.take() {
+        step.children = Some(match children {
+            StepChildren::List(list) => StepChildren::List(list.into_iter().map(normalize_step).collect()),
+            StepChildren::Map(map) => StepChildren::Map(
+                map.into_iter()
+                    .map(|(slot, steps)| (slot, steps.into_iter().map(normalize_step).collect()))
+                    .collect(),
+            ),
+        });
+    }
+
+    step
 }
 
 fn get_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
@@ -208,5 +264,5 @@ pub fn run_compose(ctx: &mut Context, steps: &[Step], initial_state: Value) -> R
 
 pub fn parse_compose(value: &Value) -> Result<Vec<Step>> {
     let steps: Vec<Step> = serde_json::from_value(value.clone())?;
-    Ok(steps)
+    Ok(steps.into_iter().map(normalize_step).collect())
 }
