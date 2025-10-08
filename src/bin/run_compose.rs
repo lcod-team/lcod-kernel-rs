@@ -241,6 +241,7 @@ fn run() -> Result<()> {
     register_core(&registry);
     register_tooling(&registry);
     register_http_contracts(&registry);
+    lcod_kernel_rs::tooling::register_resolver_axioms(&registry);
 
     let mut ctx: KernelContext = registry.context();
     let result = run_compose(&mut ctx, &compose_steps, initial_state)?;
