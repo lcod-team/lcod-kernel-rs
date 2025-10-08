@@ -1,0 +1,155 @@
+compose:
+  - call: lcod://tooling/script@1
+    in:
+      input:
+        compose: $.compose
+      source: |
+        async ({ input }) => {
+          const isPlainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+
+          const MAPPING_TYPES = { INPUT: 'input', OUTPUT: 'output' };
+          const SPREAD_KEY = '__lcod_spreads__';
+          const OPTIONAL_FLAG = '__lcod_optional__';
+          const STATE_SENTINEL = '__lcod_state__';
+          const RESULT_SENTINEL = '__lcod_result__';
+
+          const clone = (value) => {
+            if (Array.isArray(value)) {
+              return value.map(clone);
+            }
+            if (value && typeof value === 'object') {
+              const copy = {};
+              for (const [key, val] of Object.entries(value)) {
+                copy[key] = clone(val);
+              }
+              return copy;
+            }
+            return value;
+          };
+
+          const normalizeSpreadSource = (value, kind) => {
+            if (typeof value === 'string') {
+              if (value === '=') {
+                return kind === MAPPING_TYPES.INPUT ? STATE_SENTINEL : RESULT_SENTINEL;
+              }
+              return value;
+            }
+            if (isPlainObject(value)) {
+              const candidate = typeof value.source === 'string'
+                ? value.source
+                : (typeof value.path === 'string' ? value.path : undefined);
+              return candidate ?? '$.';
+            }
+            return '$.';
+          };
+
+          const normalizeSpread = (rawValue, keySuffix, kind) => {
+            const entries = Array.isArray(rawValue) ? rawValue : [rawValue];
+            return entries.flatMap((entry) => {
+              if (entry == null) return [];
+              if (typeof entry === 'string') {
+                return [{
+                  source: normalizeSpreadSource(
+                    entry === '=' && keySuffix ? `$.${keySuffix.replace(/^\./, '')}` : entry,
+                    kind
+                  )
+                }];
+              }
+              if (isPlainObject(entry)) {
+                const descriptor = {};
+                const sourceValue = entry.source ?? entry.path ?? (keySuffix ? `$.${keySuffix.replace(/^\./, '')}` : '=');
+                descriptor.source = normalizeSpreadSource(sourceValue, kind);
+                if (typeof entry.optional === 'boolean') {
+                  descriptor.optional = entry.optional;
+                }
+                if (Array.isArray(entry.pick)) {
+                  descriptor.pick = entry.pick.map(String);
+                }
+                return [descriptor];
+              }
+              return [{
+                source: normalizeSpreadSource(entry, kind)
+              }];
+            });
+          };
+
+          const normalizeValue = (value, key, kind, depth) => {
+            if (typeof value === 'string') {
+              if (value === '=' && depth === 0) {
+                return kind === MAPPING_TYPES.INPUT ? `$.${key}` : key;
+              }
+              return value;
+            }
+
+            if (Array.isArray(value)) {
+              return value.map((item) => (isPlainObject(item) ? normalizeMap(item, kind, depth + 1) : item));
+            }
+
+            if (isPlainObject(value)) {
+              return normalizeMap(value, kind, depth + 1);
+            }
+
+            return value;
+          };
+
+          const normalizeMap = (map, kind, depth) => {
+            const normalized = {};
+            const spreads = [];
+            for (const [rawKey, rawValue] of Object.entries(map)) {
+              if (depth === 0 && rawKey.startsWith('...')) {
+                const suffix = rawKey.slice(3);
+                spreads.push(...normalizeSpread(rawValue, suffix, kind));
+                continue;
+              }
+
+              const optional = depth === 0 && rawKey.endsWith('?');
+              const key = optional ? rawKey.slice(0, -1) : rawKey;
+              const value = normalizeValue(rawValue, key, kind, depth);
+
+              normalized[key] = optional
+                ? { [OPTIONAL_FLAG]: true, value }
+                : value;
+            }
+            if (spreads.length > 0) {
+              normalized[SPREAD_KEY] = spreads;
+            }
+            return normalized;
+          };
+
+          const normalizeStep = (step) => {
+            const next = clone(step);
+            if (isPlainObject(next.in)) {
+              next.in = normalizeMap(next.in, MAPPING_TYPES.INPUT, 0);
+            }
+            if (isPlainObject(next.out)) {
+              next.out = normalizeMap(next.out, MAPPING_TYPES.OUTPUT, 0);
+            }
+            if (Array.isArray(next.children)) {
+              next.children = next.children.map(normalizeStep);
+            } else if (isPlainObject(next.children)) {
+              const children = {};
+              for (const [slot, value] of Object.entries(next.children)) {
+                children[slot] = Array.isArray(value) ? value.map(normalizeStep) : value;
+              }
+              next.children = children;
+            }
+            return next;
+          };
+
+          return {
+            compose: Array.isArray(input.compose)
+              ? input.compose.map(normalizeStep)
+              : []
+          };
+        }
+      bindings:
+        compose:
+          path: $.compose
+    out:
+      normalized: compose
+
+  - call: lcod://impl/set@1
+    in:
+      compose: $.normalized
+    out:
+      compose: compose

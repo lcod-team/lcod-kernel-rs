@@ -42,6 +42,46 @@ pub enum StepChildren {
     Map(HashMap<String, Vec<Step>>),
 }
 
+fn merge_map_with_fallback(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+    for (key, source_value) in source {
+        match target.get_mut(key) {
+            Some(target_value) => {
+                if target_value.is_null() && !source_value.is_null() {
+                    *target_value = source_value.clone();
+                }
+            }
+            None => {
+                if !source_value.is_null() {
+                    target.insert(key.clone(), source_value.clone());
+                }
+            }
+        }
+    }
+}
+
+fn merge_step_with_fallback(normalized: &mut Step, fallback: &Step) {
+    merge_map_with_fallback(&mut normalized.inputs, &fallback.inputs);
+    merge_map_with_fallback(&mut normalized.out, &fallback.out);
+
+    match (&mut normalized.children, &fallback.children) {
+        (Some(StepChildren::List(target_steps)), Some(StepChildren::List(source_steps))) => {
+            for (target, source) in target_steps.iter_mut().zip(source_steps.iter()) {
+                merge_step_with_fallback(target, source);
+            }
+        }
+        (Some(StepChildren::Map(target_map)), Some(StepChildren::Map(source_map))) => {
+            for (slot, target_steps) in target_map.iter_mut() {
+                if let Some(source_steps) = source_map.get(slot) {
+                    for (target, source) in target_steps.iter_mut().zip(source_steps.iter()) {
+                        merge_step_with_fallback(target, source);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn default_suffix_path(suffix: &str) -> String {
     let trimmed = suffix.trim_start_matches('.');
     if trimmed.is_empty() {
@@ -143,23 +183,49 @@ fn impl_set_passthrough(_ctx: &mut Context, input: Value, _meta: Option<Value>) 
     Ok(input)
 }
 
-fn resolve_spec_root() -> PathBuf {
+fn normalizer_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     if let Ok(path) = env::var("LCOD_SPEC_PATH") {
         if !path.is_empty() {
-            return PathBuf::from(path);
+            paths.push(
+                PathBuf::from(path)
+                    .join("tooling")
+                    .join("compose")
+                    .join("normalize")
+                    .join("compose.yaml"),
+            );
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("lcod-spec")
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    paths.push(
+        manifest_dir
+            .join("..")
+            .join("lcod-spec")
+            .join("tooling")
+            .join("compose")
+            .join("normalize")
+            .join("compose.yaml"),
+    );
+    paths.push(
+        manifest_dir
+            .join("resources")
+            .join("normalize")
+            .join("compose.yaml"),
+    );
+    paths
 }
 
 fn normalizer_compose_path() -> PathBuf {
-    resolve_spec_root()
-        .join("tooling")
-        .join("compose")
-        .join("normalize")
-        .join("compose.yaml")
+    let candidates = normalizer_candidates();
+    for candidate in &candidates {
+        if candidate.is_file() {
+            return candidate.clone();
+        }
+    }
+    candidates
+        .last()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("resources/normalize/compose.yaml"))
 }
 
 fn load_normalizer_steps() -> Result<&'static Vec<Step>> {
@@ -437,6 +503,10 @@ fn build_input(
             map.insert(key.clone(), value.clone());
             continue;
         }
+        if step.call == "lcod://tooling/test_checker@1" && key == "compose" {
+            map.insert(key.clone(), value.clone());
+            continue;
+        }
         let (optional, inner) = unwrap_optional(value);
         let resolved = resolve_value(inner, state, slot);
         if optional && is_path_like(inner) && resolved.is_null() {
@@ -623,7 +693,12 @@ pub fn run_compose(ctx: &mut Context, steps: &[Step], initial_state: Value) -> R
 
 pub fn parse_compose(value: &Value) -> Result<Vec<Step>> {
     if let Ok(normalized_value) = normalize_via_component(value) {
-        if let Ok(steps) = serde_json::from_value::<Vec<Step>>(normalized_value.clone()) {
+        if let Ok(mut steps) = serde_json::from_value::<Vec<Step>>(normalized_value.clone()) {
+            if let Ok(fallback_steps) = serde_json::from_value::<Vec<Step>>(value.clone()) {
+                for (normalized, fallback) in steps.iter_mut().zip(fallback_steps.iter()) {
+                    merge_step_with_fallback(normalized, fallback);
+                }
+            }
             return Ok(steps);
         }
     }
