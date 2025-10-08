@@ -42,21 +42,37 @@ fn get_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
 }
 
 fn resolve_value(value: &Value, state: &Map<String, Value>, slot: &Map<String, Value>) -> Value {
-    if let Value::String(s) = value {
-        if let Some(stripped) = s.strip_prefix("$.") {
-            let state_value = Value::Object(state.clone());
-            if let Some(v) = get_path(&state_value, stripped) {
-                return v.clone();
+    match value {
+        Value::String(s) => {
+            if let Some(stripped) = s.strip_prefix("$.") {
+                let state_value = Value::Object(state.clone());
+                if let Some(v) = get_path(&state_value, stripped) {
+                    return v.clone();
+                }
             }
-        }
-        if let Some(stripped) = s.strip_prefix("$slot.") {
-            let slot_value = Value::Object(slot.clone());
-            if let Some(v) = get_path(&slot_value, stripped) {
-                return v.clone();
+            if let Some(stripped) = s.strip_prefix("$slot.") {
+                let slot_value = Value::Object(slot.clone());
+                if let Some(v) = get_path(&slot_value, stripped) {
+                    return v.clone();
+                }
             }
+            value.clone()
         }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| resolve_value(item, state, slot))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut resolved = Map::new();
+            for (key, val) in map {
+                resolved.insert(key.clone(), resolve_value(val, state, slot));
+            }
+            Value::Object(resolved)
+        }
+        _ => value.clone(),
     }
-    value.clone()
 }
 
 fn build_input(

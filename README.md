@@ -22,6 +22,9 @@ cargo test                 # kernel unit/integration tests
 cargo run --bin test_specs # execute shared spec fixtures from lcod-spec/tests/spec
 cargo run --bin run_compose -- --compose ../lcod-spec/examples/env/http_demo/compose.yaml --serve
 # run an LCOD compose (registers core/flow/tooling/http) and keep servers alive until Ctrl+C
+# resolver helpers: --project <dir>, --config <file>, --output <file>, --cache-dir <dir>
+#   e.g. cargo run --bin run_compose -- --compose ../lcod-resolver/compose.yaml \
+#        --project ./examples/tooling/resolver --output ./lcp.lock --cache-dir /tmp/lcod-cache
 ```
 
 The spec fixtures require the `lcod-spec` repository to be accessible. By default

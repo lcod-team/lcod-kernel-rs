@@ -21,6 +21,10 @@ struct CliOptions {
     compose: PathBuf,
     state: Option<PathBuf>,
     serve: bool,
+    project: Option<PathBuf>,
+    config: Option<PathBuf>,
+    output: Option<PathBuf>,
+    cache_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<CliOptions> {
@@ -28,6 +32,10 @@ fn parse_args() -> Result<CliOptions> {
     let mut compose: Option<PathBuf> = None;
     let mut state: Option<PathBuf> = None;
     let mut serve = false;
+    let mut project: Option<PathBuf> = None;
+    let mut config: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut cache_dir: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -50,6 +58,30 @@ fn parse_args() -> Result<CliOptions> {
                 print_usage();
                 std::process::exit(0);
             }
+            "--project" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--project requires a path"))?;
+                project = Some(PathBuf::from(value));
+            }
+            "--config" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--config requires a path"))?;
+                config = Some(PathBuf::from(value));
+            }
+            "--output" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--output requires a path"))?;
+                output = Some(PathBuf::from(value));
+            }
+            "--cache-dir" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--cache-dir requires a path"))?;
+                cache_dir = Some(PathBuf::from(value));
+            }
             other => {
                 return Err(anyhow!("unknown argument: {other}"));
             }
@@ -62,14 +94,26 @@ fn parse_args() -> Result<CliOptions> {
         compose,
         state,
         serve,
+        project,
+        config,
+        output,
+        cache_dir,
     })
 }
 
 fn print_usage() {
     println!(
-        "Usage: run_compose --compose path/to/compose.yaml [--state state.json] [--serve]\n\n\
-         Options:\n  --compose, -c   Path to compose YAML/JSON file (required)\n  --state,   -s   Optional path to initial state JSON file\n  --serve         Keep HTTP hosts running until Ctrl+C\n  --help,    -h   Show this message"
+        "Usage: run_compose --compose path/to/compose.yaml [--state state.json]\n            [--project path] [--config path] [--output path] [--cache-dir path] [--serve]\n\n\
+         Options:\n  --compose, -c   Path to compose YAML/JSON file (required)\n  --state,   -s   Optional path to initial state JSON file\n  --project       Override projectPath for resolver composes\n  --config        Override configPath for resolver composes\n  --output        Override outputPath for resolver composes\n  --cache-dir     Override LCOD_CACHE_DIR before execution\n  --serve         Keep HTTP hosts running until Ctrl+C\n  --help,    -h   Show this message"
     );
+}
+
+fn resolve_path(base: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        base.join(target)
+    }
 }
 
 fn load_compose(path: &Path) -> Result<Vec<Step>> {
@@ -144,7 +188,53 @@ fn main() {
 fn run() -> Result<()> {
     let options = parse_args()?;
     let compose_steps = load_compose(&options.compose)?;
-    let initial_state = load_state(options.state)?;
+    let mut initial_state = load_state(options.state.clone())?;
+
+    let current_dir = env::current_dir()?;
+
+    if !initial_state.is_object() {
+        initial_state = Value::Object(Map::new());
+    }
+
+    let mut state_map = initial_state.as_object().cloned().unwrap_or_else(Map::new);
+
+    if let Some(project_path) = options.project.as_ref() {
+        let resolved = resolve_path(&current_dir, project_path);
+        state_map.insert(
+            "projectPath".to_string(),
+            Value::String(resolved.to_string_lossy().into()),
+        );
+        if options.output.is_none() && !state_map.contains_key("outputPath") {
+            let lock_path = resolved.join("lcp.lock");
+            state_map.insert(
+                "outputPath".to_string(),
+                Value::String(lock_path.to_string_lossy().into()),
+            );
+        }
+    }
+
+    if let Some(config_path) = options.config.as_ref() {
+        let resolved = resolve_path(&current_dir, config_path);
+        state_map.insert(
+            "configPath".to_string(),
+            Value::String(resolved.to_string_lossy().into()),
+        );
+    }
+
+    if let Some(output_path) = options.output.as_ref() {
+        let resolved = resolve_path(&current_dir, output_path);
+        state_map.insert(
+            "outputPath".to_string(),
+            Value::String(resolved.to_string_lossy().into()),
+        );
+    }
+
+    if let Some(cache_dir) = options.cache_dir.as_ref() {
+        let resolved = resolve_path(&current_dir, cache_dir);
+        env::set_var("LCOD_CACHE_DIR", resolved);
+    }
+
+    let initial_state = Value::Object(state_map);
 
     let registry = Registry::new();
     register_flow(&registry);
