@@ -78,7 +78,6 @@ pub fn register_resolver_axioms(registry: &Registry) {
         "lcod://axiom/toml/parse@1",
     );
 
-    registry.register("lcod://axiom/path/join@1", path_join_axiom);
     registry.register("lcod://axiom/toml/stringify@1", toml_stringify_axiom);
     registry.register("lcod://axiom/http/download@1", http_download_axiom);
     registry.register("lcod://tooling/resolver/cache-dir@1", cache_dir_axiom);
@@ -132,20 +131,6 @@ fn resolve_dependency_contract(
             "contract/tooling/resolve-dependency@1 is deprecated; use the resolver compose pipeline instead."
         ]
     }))
-}
-
-fn path_join_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
-    let base = input.get("base").and_then(Value::as_str).unwrap_or("");
-    let segment = input.get("segment").and_then(Value::as_str).unwrap_or("");
-
-    let mut path = PathBuf::from(base);
-    if Path::new(segment).is_absolute() {
-        path = PathBuf::from(segment);
-    } else {
-        path.push(segment);
-    }
-
-    Ok(json!({ "path": path_to_string(&path)? }))
 }
 
 fn toml_stringify_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
@@ -295,17 +280,6 @@ mod tests {
             }
         });
         format!("http://{}", addr)
-    }
-
-    #[test]
-    fn path_join_handles_relative_segments() {
-        let registry = Registry::new();
-        register_resolver_axioms(&registry);
-        let mut ctx = registry.context();
-        let input = json!({ "base": "/tmp/workspace", "segment": "foo/bar" });
-        let result = path_join_axiom(&mut ctx, input, None).unwrap();
-        let path = result["path"].as_str().unwrap();
-        assert!(path.ends_with("foo/bar"));
     }
 
     #[test]

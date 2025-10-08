@@ -3,6 +3,7 @@ pub mod git;
 pub mod hash;
 pub mod http;
 pub mod parse;
+pub mod path;
 pub mod streams;
 
 use crate::registry::Registry;
@@ -16,5 +17,6 @@ pub fn register_core(registry: &Registry) {
     hash::register_hash(registry);
     http::register_http(registry);
     parse::register_parse(registry);
+    path::register_path(registry);
     streams::register_streams(registry);
 }

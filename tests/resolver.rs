@@ -74,7 +74,11 @@ fn load_compose() -> Option<Vec<Step>> {
                 match parse_compose(&steps_value) {
                     Ok(steps) => return Some(steps),
                     Err(err) => {
-                        eprintln!("Failed to normalize compose {}: {}", candidate.display(), err);
+                        eprintln!(
+                            "Failed to normalize compose {}: {}",
+                            candidate.display(),
+                            err
+                        );
                     }
                 }
             }

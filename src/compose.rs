@@ -148,10 +148,7 @@ fn normalize_spread_entries(raw: &Value, suffix: Option<&str>, kind: MappingKind
                 .unwrap_or_else(|| {
                     normalize_spread_source(&Value::String("=".to_string()), suffix, kind)
                 });
-            descriptor.insert(
-                "source".to_string(),
-                source_value,
-            );
+            descriptor.insert("source".to_string(), source_value);
             if let Some(optional) = obj.get("optional").and_then(Value::as_bool) {
                 descriptor.insert("optional".to_string(), Value::Bool(optional));
             }
@@ -409,11 +406,15 @@ fn resolve_value(value: &Value, state: &Map<String, Value>, slot: &Map<String, V
             }
             if let Some(stripped) = s.strip_prefix("$.") {
                 let state_value = Value::Object(state.clone());
-                return get_path(&state_value, stripped).cloned().unwrap_or(Value::Null);
+                return get_path(&state_value, stripped)
+                    .cloned()
+                    .unwrap_or(Value::Null);
             }
             if let Some(stripped) = s.strip_prefix("$slot.") {
                 let slot_value = Value::Object(slot.clone());
-                return get_path(&slot_value, stripped).cloned().unwrap_or(Value::Null);
+                return get_path(&slot_value, stripped)
+                    .cloned()
+                    .unwrap_or(Value::Null);
             }
             value.clone()
         }
@@ -460,13 +461,11 @@ fn build_input(
     slot: &Map<String, Value>,
 ) -> Map<String, Value> {
     let mut map = Map::new();
-    if let Some(spreads) = step
-        .inputs
-        .get(SPREAD_KEY)
-        .and_then(Value::as_array)
-    {
+    if let Some(spreads) = step.inputs.get(SPREAD_KEY).and_then(Value::as_array) {
         for descriptor in spreads {
-            let Some(obj) = descriptor.as_object() else { continue };
+            let Some(obj) = descriptor.as_object() else {
+                continue;
+            };
             let source_value = obj.get("source").unwrap_or(&Value::Null);
             let resolved = resolve_value(source_value, state, slot);
             let optional = obj
@@ -596,7 +595,9 @@ fn apply_outputs(state: &mut Map<String, Value>, mappings: &Map<String, Value>, 
         if let Some(output_obj) = output.as_object() {
             let output_value = Value::Object(output_obj.clone());
             for descriptor in spreads {
-                let Some(obj) = descriptor.as_object() else { continue };
+                let Some(obj) = descriptor.as_object() else {
+                    continue;
+                };
                 let source = obj.get("source").and_then(Value::as_str).unwrap_or("$");
                 let optional = obj
                     .get("optional")
