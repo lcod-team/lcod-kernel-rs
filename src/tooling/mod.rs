@@ -1,13 +1,16 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use serde_json::{json, Map, Value};
+use toml::Value as TomlValue;
 
 use crate::compose::{parse_compose, run_compose};
-use crate::registry::{Context, Func, Registry};
+use crate::registry::{Context, Registry};
 
 mod common;
 mod resolver;
@@ -22,143 +25,420 @@ pub fn register_tooling(registry: &Registry) {
 }
 
 fn register_resolver_helpers(registry: &Registry) {
-    for (id, segments) in RESOLVER_HELPERS.iter() {
-        registry.register(
-            *id,
-            ResolverHelperFunc {
-                id: *id,
-                segments: *segments,
-            },
-        );
+    let defs = build_helper_definitions();
+    if defs.is_empty() {
+        eprintln!("warning: no resolver helper definitions found; resolver helpers not registered");
+        return;
     }
-}
-
-struct ResolverHelperFunc {
-    id: &'static str,
-    segments: &'static [&'static str],
-}
-
-impl Func for ResolverHelperFunc {
-    fn call(&self, ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
-        let steps = load_helper_steps(self.segments)
-            .with_context(|| format!("unable to load resolver helper {}", self.id))?;
-        run_compose(ctx, &steps, input)
-    }
-}
-
-const HELPER_LOAD_DESCRIPTOR: [&str; 4] =
-    ["components", "internal", "load_descriptor", "compose.yaml"];
-const HELPER_LOAD_CONFIG: [&str; 4] = ["components", "internal", "load_config", "compose.yaml"];
-const HELPER_LOCK_PATH: [&str; 4] = ["components", "internal", "lock_path", "compose.yaml"];
-const HELPER_PREPARE_CONFIG: [&str; 4] = ["components", "internal", "prepare_config", "compose.yaml"];
-const HELPER_PREPARE_CACHE: [&str; 4] = ["components", "internal", "prepare_cache", "compose.yaml"];
-const HELPER_RESOLVE_DEPS: [&str; 4] = ["components", "internal", "resolve_dependencies", "compose.yaml"];
-const HELPER_SUMMARIZE_RESULT: [&str; 4] = ["components", "internal", "summarize_result", "compose.yaml"];
-const HELPER_BUILD_LOCK: [&str; 4] = ["components", "internal", "build_lock", "compose.yaml"];
-
-const RESOLVER_HELPERS: [(&str, &[&str]); 8] = [
-    ("lcod://resolver/internal/load-descriptor@1", &HELPER_LOAD_DESCRIPTOR),
-    ("lcod://resolver/internal/load-config@1", &HELPER_LOAD_CONFIG),
-    ("lcod://resolver/internal/lock-path@1", &HELPER_LOCK_PATH),
-    ("lcod://resolver/internal/prepare-config@1", &HELPER_PREPARE_CONFIG),
-    ("lcod://resolver/internal/prepare-cache@1", &HELPER_PREPARE_CACHE),
-    ("lcod://resolver/internal/resolve-dependencies@1", &HELPER_RESOLVE_DEPS),
-    ("lcod://resolver/internal/summarize-result@1", &HELPER_SUMMARIZE_RESULT),
-    ("lcod://resolver/internal/build-lock@1", &HELPER_BUILD_LOCK),
-];
-
-fn load_helper_steps(segments: &[&str]) -> Result<Vec<crate::compose::Step>> {
-    let mut rel_path = PathBuf::new();
-    for part in segments {
-        rel_path.push(part);
-    }
-
-    let mut errors = Vec::new();
-
-    if let Ok(components_path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
-        let candidate = PathBuf::from(components_path).join(&rel_path);
-        match load_compose_from_path(&candidate) {
-            Ok(steps) => return Ok(steps),
-            Err(err) => errors.push(format!(
-                "{}: {}",
-                candidate.display(),
-                err.to_string()
-            )),
+    for def in defs {
+        let compose_path = Arc::new(def.compose_path);
+        let context = Arc::new(def.context);
+        let ids: Vec<String> = std::iter::once(def.id.clone())
+            .chain(def.aliases.into_iter())
+            .collect();
+        for id in ids {
+            let id_arc = Arc::new(id.clone());
+            let compose_path = Arc::clone(&compose_path);
+            let context = Arc::clone(&context);
+            registry.register(
+                id,
+                move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
+                    let steps = load_helper_compose(&compose_path, &context)
+                        .with_context(|| format!("unable to load resolver helper {}", id_arc.as_ref()))?;
+                    run_compose(ctx, &steps, input)
+                },
+            );
         }
     }
+}
 
-    if let Ok(resolver_path) = env::var("LCOD_RESOLVER_PATH") {
-        let candidate = PathBuf::from(resolver_path).join(&rel_path);
-        match load_compose_from_path(&candidate) {
-            Ok(steps) => return Ok(steps),
-            Err(err) => errors.push(format!(
-                "{}: {}",
-                candidate.display(),
-                err.to_string()
-            )),
+#[derive(Clone)]
+struct HelperContext {
+    base_path: String,
+    version: String,
+    alias_map: HashMap<String, String>,
+}
+
+struct ResolverHelperDef {
+    id: String,
+    compose_path: PathBuf,
+    context: HelperContext,
+    aliases: Vec<String>,
+}
+
+enum CandidateKind {
+    Root,
+    Components,
+    Legacy,
+}
+
+struct Candidate {
+    kind: CandidateKind,
+    path: PathBuf,
+}
+
+fn build_helper_definitions() -> Vec<ResolverHelperDef> {
+    let candidates = gather_candidates();
+    for candidate in candidates {
+        let defs = load_definitions_for_candidate(&candidate);
+        if !defs.is_empty() {
+            return defs;
         }
     }
+    Vec::new()
+}
 
+fn gather_candidates() -> Vec<Candidate> {
+    let mut out = Vec::new();
+    if let Ok(path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
+        out.push(Candidate {
+            kind: CandidateKind::Components,
+            path: PathBuf::from(path),
+        });
+    }
+    if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
+        out.push(Candidate {
+            kind: CandidateKind::Root,
+            path: PathBuf::from(path),
+        });
+    }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fallback = manifest_dir
-        .join("..")
-        .join("lcod-resolver")
-        .join(&rel_path);
-    match load_compose_from_path(&fallback) {
-        Ok(steps) => return Ok(steps),
-        Err(err) => errors.push(format!(
-            "{}: {}",
-            fallback.display(),
-            err.to_string()
-        )),
-    }
+    out.push(Candidate {
+        kind: CandidateKind::Root,
+        path: manifest_dir.join("..").join("lcod-resolver"),
+    });
+    out.push(Candidate {
+        kind: CandidateKind::Legacy,
+        path: manifest_dir
+            .join("..").join("lcod-spec").join("tooling").join("resolver"),
+    });
+    out
+}
 
-    if let Ok(spec_path) = env::var("LCOD_SPEC_PATH") {
-        if let Some(helper_dir) = segments.get(2) {
-            let candidate = PathBuf::from(spec_path)
-                .join("tooling")
-                .join("resolver")
-                .join(helper_dir)
-                .join("compose.yaml");
-            match load_compose_from_path(&candidate) {
-                Ok(steps) => return Ok(steps),
-                Err(err) => errors.push(format!(
-                    "{}: {}",
-                    candidate.display(),
-                    err.to_string()
-                )),
+fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDef> {
+    match candidate.kind {
+        CandidateKind::Root => {
+            let defs = load_workspace_definitions(&candidate.path);
+            if !defs.is_empty() {
+                defs
+            } else {
+                load_legacy_component_definitions(&candidate.path.join("components"))
+            }
+        }
+        CandidateKind::Components => load_legacy_component_definitions(&candidate.path),
+        CandidateKind::Legacy => load_legacy_component_definitions(&candidate.path),
+    }
+}
+
+fn load_workspace_definitions(root: &Path) -> Vec<ResolverHelperDef> {
+    let workspace_path = root.join("workspace.lcp.toml");
+    let Ok(raw) = fs::read_to_string(&workspace_path) else {
+        return Vec::new();
+    };
+    let workspace_value: TomlValue = match raw.parse() {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let workspace_table = match workspace_value.get("workspace").and_then(TomlValue::as_table) {
+        Some(table) => table,
+        None => return Vec::new(),
+    };
+    let mut alias_map = HashMap::new();
+    if let Some(scope_aliases) = workspace_table
+        .get("scopeAliases")
+        .and_then(TomlValue::as_table)
+    {
+        for (key, value) in scope_aliases {
+            if let Some(alias) = value.as_str() {
+                alias_map.insert(key.to_string(), alias.to_string());
+            }
+        }
+    }
+    let packages = match workspace_table
+        .get("packages")
+        .and_then(TomlValue::as_array)
+    {
+        Some(list) => list,
+        None => return Vec::new(),
+    };
+    let mut defs = Vec::new();
+    for pkg in packages {
+        if let Some(name) = pkg.as_str() {
+            defs.extend(load_package_definitions(root, name, &alias_map));
+        }
+    }
+    defs
+}
+
+fn load_package_definitions(
+    root: &Path,
+    package: &str,
+    workspace_aliases: &HashMap<String, String>,
+) -> Vec<ResolverHelperDef> {
+    let pkg_dir = root.join("packages").join(package);
+    let manifest_path = pkg_dir.join("lcp.toml");
+    let Ok(raw) = fs::read_to_string(&manifest_path) else {
+        return Vec::new();
+    };
+    let manifest: TomlValue = match raw.parse() {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let context = create_context(&manifest, workspace_aliases);
+    let components = manifest
+        .get("workspace")
+        .and_then(TomlValue::as_table)
+        .and_then(|w| w.get("components"))
+        .and_then(TomlValue::as_array);
+    let mut defs = Vec::new();
+    if let Some(components) = components {
+        for component in components {
+            if let Some(table) = component.as_table() {
+                let Some(id_raw) = table.get("id").and_then(TomlValue::as_str) else {
+                    continue;
+                };
+                let Some(rel_path) = table.get("path").and_then(TomlValue::as_str) else {
+                    continue;
+                };
+                let component_dir = pkg_dir.join(rel_path);
+                let compose_path = component_dir.join("compose.yaml");
+                if !compose_path.exists() {
+                    continue;
+                }
+                let canonical_id = canonicalize_id(id_raw, &context);
+                let mut aliases = Vec::new();
+                let component_manifest_path = component_dir.join("lcp.toml");
+                if let Ok(raw) = fs::read_to_string(&component_manifest_path) {
+                    if let Ok(component_manifest) = raw.parse::<TomlValue>() {
+                        if let Some(existing_id) =
+                            component_manifest.get("id").and_then(TomlValue::as_str)
+                        {
+                            if existing_id != canonical_id {
+                                aliases.push(existing_id.to_string());
+                            }
+                        }
+                    }
+                }
+                defs.push(ResolverHelperDef {
+                    id: canonical_id,
+                    compose_path: compose_path.clone(),
+                    context: context.clone(),
+                    aliases,
+                });
+            }
+        }
+    }
+    defs
+}
+
+fn create_context(
+    manifest: &TomlValue,
+    workspace_aliases: &HashMap<String, String>,
+) -> HelperContext {
+    let mut alias_map = workspace_aliases.clone();
+    if let Some(package_aliases) = manifest
+        .get("workspace")
+        .and_then(TomlValue::as_table)
+        .and_then(|w| w.get("scopeAliases"))
+        .and_then(TomlValue::as_table)
+    {
+        for (key, value) in package_aliases {
+            if let Some(alias) = value.as_str() {
+                alias_map.insert(key.to_string(), alias.to_string());
             }
         }
     }
 
-    let legacy_root = manifest_dir
-        .join("..")
-        .join("lcod-spec")
-        .join("tooling")
-        .join("resolver");
-    if let Some(helper_dir) = segments.get(2) {
-        let candidate = legacy_root.join(helper_dir).join("compose.yaml");
-        match load_compose_from_path(&candidate) {
-            Ok(steps) => return Ok(steps),
-            Err(err) => errors.push(format!(
-                "{}: {}",
-                candidate.display(),
-                err.to_string()
-            )),
-        }
-    }
+    let manifest_id = manifest.get("id").and_then(TomlValue::as_str);
+    let base_path = manifest_id
+        .and_then(|id| extract_path_from_id(id).map(|s| s.to_string()))
+        .unwrap_or_else(|| {
+            let ns = manifest.get("namespace").and_then(TomlValue::as_str).unwrap_or("");
+            let name = manifest.get("name").and_then(TomlValue::as_str).unwrap_or("");
+            if ns.is_empty() {
+                name.to_string()
+            } else if name.is_empty() {
+                ns.to_string()
+            } else {
+                format!("{}/{}", ns, name)
+            }
+        });
 
-    if errors.is_empty() {
-        Err(anyhow!(
-            "unable to locate resolver helper compose at {}",
-            rel_path.display()
-        ))
-    } else {
-        Err(anyhow!(
-            "unable to locate resolver helper compose (searched {:?})",
-            errors
-        ))
+    let version = manifest
+        .get("version")
+        .and_then(TomlValue::as_str)
+        .map(|s| s.to_string())
+        .or_else(|| manifest_id.and_then(|id| extract_version_from_id(id).map(|v| v.to_string())))
+        .unwrap_or_else(|| "0.0.0".to_string());
+
+    HelperContext {
+        base_path,
+        version,
+        alias_map,
     }
+}
+
+fn load_legacy_component_definitions(dir: &Path) -> Vec<ResolverHelperDef> {
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut defs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let compose_path = path.join("compose.yaml");
+        if !compose_path.exists() {
+            continue;
+        }
+        let manifest_path = path.join("lcp.toml");
+        let Ok(raw) = fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = raw.parse::<TomlValue>() else {
+            continue;
+        };
+        let Some(component_id) = manifest.get("id").and_then(TomlValue::as_str) else {
+            continue;
+        };
+        let base_path = extract_path_from_id(component_id)
+            .map(|p| {
+                let mut base = p.to_string();
+                if let Some(pos) = base.rfind('/') {
+                    base.truncate(pos);
+                } else {
+                    base.clear();
+                }
+                base
+            })
+            .unwrap_or_default();
+        let version = extract_version_from_id(component_id)
+            .unwrap_or("0.0.0")
+            .to_string();
+        defs.push(ResolverHelperDef {
+            id: component_id.to_string(),
+            compose_path: compose_path.clone(),
+            context: HelperContext {
+                base_path,
+                version,
+                alias_map: HashMap::new(),
+            },
+            aliases: Vec::new(),
+        });
+    }
+    defs
+}
+
+fn extract_path_from_id(id: &str) -> Option<&str> {
+    if !id.starts_with("lcod://") {
+        return None;
+    }
+    id.strip_prefix("lcod://")?.split('@').next()
+}
+
+fn extract_version_from_id(id: &str) -> Option<&str> {
+    id.split('@').nth(1)
+}
+
+fn load_helper_compose(
+    path: &Path,
+    context: &HelperContext,
+) -> Result<Vec<crate::compose::Step>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("unable to read compose file: {}", path.display()))?;
+    let mut doc: Value = serde_yaml::from_str(&content)
+        .with_context(|| format!("invalid YAML compose: {}", path.display()))?;
+    let compose_value = doc
+        .get_mut("compose")
+        .ok_or_else(|| anyhow!("compose root missing in {}", path.display()))?;
+    canonicalize_value(compose_value, context);
+    parse_compose(compose_value)
+        .with_context(|| format!("invalid compose structure in {}", path.display()))
+}
+
+fn canonicalize_value(value: &mut Value, context: &HelperContext) {
+    match value {
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                canonicalize_value(item, context);
+            }
+        }
+        Value::Object(map) => canonicalize_object(map, context),
+        _ => {}
+    }
+}
+
+fn canonicalize_object(map: &mut Map<String, Value>, context: &HelperContext) {
+    if let Some(Value::String(call)) = map.get_mut("call") {
+        let canonical = canonicalize_id(call, context);
+        *call = canonical;
+    }
+    if let Some(children) = map.get_mut("children") {
+        canonicalize_children(children, context);
+    }
+    for (key, val) in map.iter_mut() {
+        if key == "call" || key == "children" {
+            continue;
+        }
+        canonicalize_value(val, context);
+    }
+}
+
+fn canonicalize_children(value: &mut Value, context: &HelperContext) {
+    match value {
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                canonicalize_value(item, context);
+            }
+        }
+        Value::Object(map) => {
+            for val in map.values_mut() {
+                canonicalize_value(val, context);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn canonicalize_id(raw: &str, context: &HelperContext) -> String {
+    if raw.starts_with("lcod://") {
+        return raw.to_string();
+    }
+    let trimmed = raw.trim_start_matches("./");
+    let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return raw.to_string();
+    }
+    let alias = segments[0];
+    let mapped = context
+        .alias_map
+        .get(alias)
+        .map(|s| s.as_str())
+        .unwrap_or(alias);
+    let mut parts = Vec::new();
+    if !context.base_path.is_empty() {
+        parts.push(context.base_path.clone());
+    }
+    if !mapped.is_empty() {
+        parts.push(mapped.to_string());
+    }
+    for seg in segments.iter().skip(1) {
+        parts.push((*seg).to_string());
+    }
+    let full = parts.join("/");
+    if full.is_empty() {
+        return raw.to_string();
+    }
+    let version = if context.version.is_empty() {
+        "0.0.0"
+    } else {
+        context.version.as_str()
+    };
+    format!("lcod://{}@{}", full, version)
 }
 
 pub use resolver::register_resolver_axioms;

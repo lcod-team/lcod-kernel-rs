@@ -3,10 +3,11 @@ use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::registry::Registry;
 use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
-use serde_json::json;
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn resolver_compose_candidates() -> Vec<PathBuf> {
@@ -42,6 +43,14 @@ fn resolver_compose_candidates() -> Vec<PathBuf> {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("lcod-resolver")
+            .join("packages")
+            .join("resolver")
+            .join("compose.yaml"),
+    );
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("lcod-resolver")
             .join("compose.yaml"),
     );
     candidates.push(
@@ -71,7 +80,11 @@ fn load_compose() -> Option<Vec<Step>> {
                 let Some(steps_value) = yaml.get("compose").cloned() else {
                     continue;
                 };
-                match parse_compose(&steps_value) {
+                let mut canonical = steps_value;
+                if let Some(context) = load_manifest_context(candidate) {
+                    canonicalize_value(&mut canonical, &context);
+                }
+                match parse_compose(&canonical) {
                     Ok(steps) => return Some(steps),
                     Err(err) => {
                         eprintln!(
@@ -91,6 +104,148 @@ fn load_compose() -> Option<Vec<Step>> {
         }
     }
     None
+}
+
+#[derive(Clone, Debug)]
+struct ManifestContext {
+    base_path: String,
+    version: String,
+    alias_map: HashMap<String, String>,
+}
+
+fn load_manifest_context(compose_path: &Path) -> Option<ManifestContext> {
+    let manifest_path = compose_path.parent()?.join("lcp.toml");
+    let manifest_text = fs::read_to_string(manifest_path).ok()?;
+    let manifest: toml::Value = manifest_text.parse().ok()?;
+    let id = manifest.get("id").and_then(|v| v.as_str());
+    let base_path = if let Some(id) = id {
+        id.strip_prefix("lcod://")?
+            .split('@')
+            .next()
+            .map(|s| s.to_string())?
+    } else {
+        let ns = manifest
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name = manifest.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let joined = [ns, name]
+            .iter()
+            .filter(|part| !part.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("/");
+        if joined.is_empty() {
+            return None;
+        }
+        joined
+    };
+    let version = manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| id.and_then(|i| i.split('@').nth(1).map(|s| s.to_string())))
+        .unwrap_or_else(|| "0.0.0".to_string());
+    let alias_map = manifest
+        .get("workspace")
+        .and_then(|v| v.as_table())
+        .and_then(|table| table.get("scopeAliases"))
+        .and_then(|v| v.as_table())
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|alias| (k.clone(), alias.to_string())))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    Some(ManifestContext {
+        base_path,
+        version,
+        alias_map,
+    })
+}
+
+fn canonicalize_value(value: &mut JsonValue, context: &ManifestContext) {
+    match value {
+        JsonValue::Array(arr) => {
+            for item in arr.iter_mut() {
+                canonicalize_value(item, context);
+            }
+        }
+        JsonValue::Object(map) => canonicalize_object(map, context),
+        _ => {}
+    }
+}
+
+fn canonicalize_object(map: &mut JsonMap<String, JsonValue>, context: &ManifestContext) {
+    if let Some(JsonValue::String(call)) = map.get_mut("call") {
+        *call = canonicalize_id(call, context);
+    }
+    if let Some(children) = map.get_mut("children") {
+        canonicalize_children(children, context);
+    }
+    if let Some(input) = map.get_mut("in") {
+        canonicalize_value(input, context);
+    }
+    if let Some(output) = map.get_mut("out") {
+        canonicalize_value(output, context);
+    }
+    if let Some(bindings) = map.get_mut("bindings") {
+        canonicalize_value(bindings, context);
+    }
+    for (key, val) in map.iter_mut() {
+        if matches!(key.as_str(), "call" | "children" | "in" | "out" | "bindings") {
+            continue;
+        }
+        canonicalize_value(val, context);
+    }
+}
+
+fn canonicalize_children(value: &mut JsonValue, context: &ManifestContext) {
+    match value {
+        JsonValue::Array(arr) => {
+            for item in arr.iter_mut() {
+                canonicalize_value(item, context);
+            }
+        }
+        JsonValue::Object(map) => {
+            for val in map.values_mut() {
+                canonicalize_value(val, context);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn canonicalize_id(raw: &str, context: &ManifestContext) -> String {
+    if raw.starts_with("lcod://") {
+        return raw.to_string();
+    }
+    let trimmed = raw.trim_start_matches("./");
+    let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return raw.to_string();
+    }
+    let alias = segments[0];
+    let mapped = context
+        .alias_map
+        .get(alias)
+        .map(|s| s.as_str())
+        .unwrap_or(alias);
+    let mut parts = Vec::new();
+    if !context.base_path.is_empty() {
+        parts.push(context.base_path.clone());
+    }
+    if !mapped.is_empty() {
+        parts.push(mapped.to_string());
+    }
+    for seg in segments.iter().skip(1) {
+        parts.push((*seg).to_string());
+    }
+    if parts.is_empty() {
+        return raw.to_string();
+    }
+    format!("lcod://{}@{}", parts.join("/"), context.version)
 }
 fn new_registry() -> Registry {
     let registry = Registry::new();

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ use lcod_kernel_rs::{
 };
 use serde_json::{Map, Value};
 use serde_yaml;
+use toml::Value as TomlValue;
 
 struct CliOptions {
     compose: PathBuf,
@@ -133,7 +135,7 @@ fn load_compose(path: &Path) -> Result<Vec<Step>> {
             .with_context(|| format!("invalid JSON compose: {}", path.display()))?
     };
 
-    let compose_value = match &value {
+    let mut compose_value = match &value {
         Value::Object(map) => map
             .get("compose")
             .cloned()
@@ -142,8 +144,163 @@ fn load_compose(path: &Path) -> Result<Vec<Step>> {
         _ => return Err(anyhow!("compose file must contain a compose array")),
     };
 
+    if let Some(context) = load_manifest_context(path.parent().unwrap_or(Path::new("."))) {
+        canonicalize_value_mut(&mut compose_value, &context);
+    }
+
     parse_compose(&compose_value)
         .with_context(|| format!("invalid compose structure in {}", path.display()))
+}
+
+struct ComposeContext {
+    base_path: String,
+    version: String,
+    alias_map: HashMap<String, String>,
+}
+
+fn load_manifest_context(dir: &Path) -> Option<ComposeContext> {
+    let manifest_path = dir.join("lcp.toml");
+    let raw = fs::read_to_string(&manifest_path).ok()?;
+    let manifest: TomlValue = raw.parse().ok()?;
+
+    let manifest_id = manifest.get("id").and_then(TomlValue::as_str);
+    let base_path = manifest_id
+        .and_then(extract_path_from_id)
+        .map(|s| s.to_string())
+        .or_else(|| {
+            let ns = manifest.get("namespace").and_then(TomlValue::as_str).unwrap_or("");
+            let name = manifest.get("name").and_then(TomlValue::as_str).unwrap_or("");
+            let joined = [ns, name]
+                .iter()
+                .filter(|part| !part.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("/");
+            if joined.is_empty() { None } else { Some(joined) }
+        })?;
+
+    let version = manifest
+        .get("version")
+        .and_then(TomlValue::as_str)
+        .map(|s| s.to_string())
+        .or_else(|| manifest_id.and_then(extract_version_from_id).map(|s| s.to_string()))
+        .unwrap_or_else(|| "0.0.0".to_string());
+
+    let alias_map = manifest
+        .get("workspace")
+        .and_then(TomlValue::as_table)
+        .and_then(|w| w.get("scopeAliases"))
+        .and_then(TomlValue::as_table)
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|alias| (k.to_string(), alias.to_string())))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    Some(ComposeContext {
+        base_path,
+        version,
+        alias_map,
+    })
+}
+
+fn canonicalize_value_mut(value: &mut Value, context: &ComposeContext) {
+    if context.base_path.is_empty() {
+        return;
+    }
+    match value {
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                canonicalize_value_mut(item, context);
+            }
+        }
+        Value::Object(map) => canonicalize_object_mut(map, context),
+        _ => {}
+    }
+}
+
+fn canonicalize_object_mut(map: &mut Map<String, Value>, context: &ComposeContext) {
+    if let Some(Value::String(call)) = map.get_mut("call") {
+        *call = canonicalize_id(call, context);
+    }
+    if let Some(children) = map.get_mut("children") {
+        canonicalize_children_mut(children, context);
+    }
+    if let Some(value) = map.get_mut("in") {
+        canonicalize_value_mut(value, context);
+    }
+    if let Some(value) = map.get_mut("out") {
+        canonicalize_value_mut(value, context);
+    }
+    if let Some(value) = map.get_mut("bindings") {
+        canonicalize_value_mut(value, context);
+    }
+    for (key, val) in map.iter_mut() {
+        if key == "call" || key == "children" || key == "in" || key == "out" || key == "bindings" {
+            continue;
+        }
+        canonicalize_value_mut(val, context);
+    }
+}
+
+fn canonicalize_children_mut(value: &mut Value, context: &ComposeContext) {
+    match value {
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                canonicalize_value_mut(item, context);
+            }
+        }
+        Value::Object(map) => {
+            for val in map.values_mut() {
+                canonicalize_value_mut(val, context);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn canonicalize_id(raw: &str, context: &ComposeContext) -> String {
+    if raw.starts_with("lcod://") {
+        return raw.to_string();
+    }
+    let trimmed = raw.trim_start_matches("./");
+    let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return raw.to_string();
+    }
+    let alias = segments[0];
+    let mapped = context
+        .alias_map
+        .get(alias)
+        .map(|s| s.as_str())
+        .unwrap_or(alias);
+    let mut parts = Vec::new();
+    if !context.base_path.is_empty() {
+        parts.push(context.base_path.clone());
+    }
+    if !mapped.is_empty() {
+        parts.push(mapped.to_string());
+    }
+    for seg in segments.iter().skip(1) {
+        parts.push((*seg).to_string());
+    }
+    if parts.is_empty() {
+        return raw.to_string();
+    }
+    format!("lcod://{}@{}", parts.join("/"), context.version)
+}
+
+fn extract_path_from_id(id: &str) -> Option<&str> {
+    if !id.starts_with("lcod://") {
+        return None;
+    }
+    id.strip_prefix("lcod://")?.split('@').next()
+}
+
+fn extract_version_from_id(id: &str) -> Option<&str> {
+    id.split('@').nth(1)
 }
 
 fn load_state(path: Option<PathBuf>) -> Result<Value> {

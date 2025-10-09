@@ -21,7 +21,7 @@
 - [ ] M3-06: Expose configurable sandbox hooks (`$api.run`, `$api.config`) for embedded logic.
   - [ ] Implement `tooling/script@1` runtime using the embedded JS engine (sandbox configuration TBD)
     - [x] Enforce runtime timeouts via QuickJS interrupt handler and parity tests
-- [ ] M3-07: Implement scoped registries & lazy component loading (#10)
+- [ ] M3-07: Implement workspace-scoped registries, relative component IDs, and lazy component loading (#10)
 
 ## M4 — Packaging & distribution
 - [ ] Package the Rust runtime as a reusable crate and binary (`lcod-kernel-rs-cli`).
