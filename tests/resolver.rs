@@ -194,7 +194,10 @@ fn canonicalize_object(map: &mut JsonMap<String, JsonValue>, context: &ManifestC
         canonicalize_value(bindings, context);
     }
     for (key, val) in map.iter_mut() {
-        if matches!(key.as_str(), "call" | "children" | "in" | "out" | "bindings") {
+        if matches!(
+            key.as_str(),
+            "call" | "children" | "in" | "out" | "bindings"
+        ) {
             continue;
         }
         canonicalize_value(val, context);

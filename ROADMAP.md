@@ -1,41 +1,42 @@
-# Roadmap — Rust Kernel (lcod-kernel-rs)
+# Roadmap — lcod-kernel-rs
 
 ## M0 — Core runtime
-- [x] Charger et valider `lcp.toml` (TOML strict + JSON Schema).
-- [x] Enregistrer contrats, implémentations et flows dans la registry embarquée.
-- [x] CLI minimale (`cargo run --bin run_compose`) capable d’exécuter un compose avec bindings hôte.
+- [x] Load and validate `lcp.toml` (strict TOML + JSON Schema).
+- [x] Register contracts, implementations, and flows inside the embedded registry.
+- [x] Provide a minimal CLI (`cargo run --bin run_compose`) capable of executing a compose with host bindings.
 
 ## M1 — Composition & tests
-- [x] Opérateurs de flow (`flow/if@1`, `flow/foreach@1`, `flow/break@1`, `flow/continue@1`, `flow/throw@1`).
-- [x] Support des slots imbriqués (`ctx.run_slot`, `ctx.replace_run_slot_handler`) et nettoyage de scope.
-- [x] Couverture `cargo test` + miroirs des fixtures spec (`tests/flow_blocks.rs`, `cargo run --bin test_specs`).
-- [ ] Compléter `flow/parallel@1` et `flow/try@1` (propagation structurée des erreurs).
+- [x] Flow operators (`flow/if@1`, `flow/foreach@1`, `flow/break@1`, `flow/continue@1`, `flow/throw@1`).
+- [x] Nested slot support (`ctx.run_slot`, `ctx.replace_run_slot_handler`) and scope cleanup.
+- [x] Coverage via `cargo test` plus mirrored spec fixtures (`tests/flow_blocks.rs`, `cargo run --bin test_specs`).
+- [ ] Complete `flow/parallel@1` and `flow/try@1` (structured error propagation).
 
 ## M2 — Tooling & CI
-- [ ] Publier un workflow CI rustfmt/clippy.
-- [x] Tests de parité `tooling/script@1` (QuickJS sandbox, timeouts, `run_slot`).
+- [ ] Publish a rustfmt/clippy CI workflow.
+- [x] Parity tests for `tooling/script@1` (QuickJS sandbox, timeouts, `run_slot`).
 
 ## M3 — Runtime parity
 
-Goal: atteindre la parité fonctionnelle avec la référence Node.
+Goal: reach functional parity with the Node reference runtime.
 
 Delivered:
 - [x] Infrastructure contracts (`core/fs`, `core/http`, `core/git`, `core/hash`, `core/parse`, `core/stream`) via `register_core`.
-- [x] Resolver CLI (`cargo run --bin run_compose -- --resolver`) + helpers workspace (canonicalisation des IDs).
-- [x] Tooling partagé (`tooling/test_checker@1`, `tooling/script@1`) et conformance diff (piloté par `node scripts/run-conformance.mjs`).
+- [x] Resolver CLI (`cargo run --bin run_compose -- --resolver`) plus workspace helpers (canonical ID handling).
+- [x] Shared tooling (`tooling/test_checker@1`, `tooling/script@1`) and conformance diff (driven by `node scripts/run-conformance.mjs`).
+- [x] Registry scope chaining via `tooling/registry/scope@1` (scoped contract bindings with automatic restoration; inline helper registration pending).
 
 Next:
-- [ ] M3-04b Finaliser les bindings avancés (git/http, packaging des manifests) et documenter `docs/runtime-rust.md`.
-- [ ] M3-06 Registry scope chaining: implémenter le support natif de `tooling/registry/scope@1` (push/pop registry) avec tests intégrés + conformance.
+- [ ] M3-04b Finalise advanced bindings (git/http, manifest packaging) and document in `docs/runtime-rust.md`.
+- [ ] Extend scoped registries to handle inline helper/component registration once the spec requirements are defined.
 
-## M4 — Observabilité & logging
-- [ ] Intégrer `lcod://tooling/log@1` une fois la spec fixée (sérialisation structured log + passerelles host).
-- [ ] Exposer un mode trace (`--trace`) sur `run_compose` pour inspecter les mutations de scope/slots.
+## M4 — Observability & logging
+- [ ] Integrate `lcod://tooling/log@1` once defined in the spec (structured log serialization + host bridges).
+- [ ] Expose a trace mode (`--trace`) in `run_compose` to inspect scope/slot mutations.
 
 ## M5 — Packaging & distribution
-- [ ] Publier un crate/binaire `lcod-kernel-rs-cli`.
-- [ ] Implémenter `--assemble/--ship/--build` (aligné sur la spec packaging).
-- [x] Conserver la normalisation `tooling/compose/normalize@1` alignée sur la spec.
+- [ ] Publish a crate/binary `lcod-kernel-rs-cli`.
+- [ ] Implement `--assemble/--ship/--build` (aligned with the spec packaging roadmap).
+- [x] Keep `tooling/compose/normalize@1` aligned with the spec.
 
 ## M6 — Service demo
-- [x] HTTP demo (`env/http_host@0.1.0`, `project/http_app@0.1.0`) : parité avec Node + tests.
+- [x] HTTP demo (`env/http_host@0.1.0`, `project/http_app@0.1.0`): parity with Node plus tests.

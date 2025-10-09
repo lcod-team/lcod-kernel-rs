@@ -19,12 +19,14 @@ pub trait SlotExecutor {
 
 struct RegistryInner {
     funcs: HashMap<String, Arc<dyn Func>>,
+    bindings: HashMap<String, String>,
 }
 
 impl RegistryInner {
     fn new() -> Self {
         Self {
             funcs: HashMap::new(),
+            bindings: HashMap::new(),
         }
     }
 }
@@ -75,6 +77,13 @@ impl Registry {
         inner.funcs.insert(name.into(), Arc::new(func));
     }
 
+    pub fn set_binding(&self, contract: impl Into<String>, implementation: impl Into<String>) {
+        let mut inner = self.inner.lock().expect("registry poisoned");
+        inner
+            .bindings
+            .insert(contract.into(), implementation.into());
+    }
+
     pub fn call(
         &self,
         ctx: &mut Context,
@@ -103,6 +112,7 @@ pub struct Context {
     run_slot_handler: Option<Box<dyn SlotExecutor + 'static>>,
     streams: StreamManager,
     http_hosts: HttpHostManager,
+    registry_scope_stack: Vec<HashMap<String, String>>,
 }
 
 impl Context {
@@ -113,13 +123,23 @@ impl Context {
             run_slot_handler: None,
             streams: StreamManager::new(),
             http_hosts: HttpHostManager::new(),
+            registry_scope_stack: Vec::new(),
         }
     }
 
     pub fn call(&mut self, name: &str, input: Value, meta: Option<Value>) -> Result<Value> {
         let func = {
             let inner = self.registry.lock().expect("registry poisoned");
-            inner.funcs.get(name).cloned()
+            if let Some(func) = inner.funcs.get(name) {
+                Some(func.clone())
+            } else if name.starts_with("lcod://contract/") {
+                inner
+                    .bindings
+                    .get(name)
+                    .and_then(|binding| inner.funcs.get(binding).cloned())
+            } else {
+                None
+            }
         };
         let Some(func) = func else {
             return Err(anyhow!("function not found: {name}"));
@@ -179,6 +199,36 @@ impl Context {
 
     pub fn stop_all_http_hosts(&mut self) {
         self.http_hosts.stop_all();
+    }
+
+    pub fn enter_registry_scope(
+        &mut self,
+        bindings: Option<HashMap<String, String>>,
+    ) -> Result<()> {
+        let current = {
+            let inner = self.registry.lock().expect("registry poisoned");
+            inner.bindings.clone()
+        };
+        self.registry_scope_stack.push(current.clone());
+        let mut merged = current;
+        if let Some(overrides) = bindings {
+            for (contract, implementation) in overrides {
+                merged.insert(contract, implementation);
+            }
+        }
+        {
+            let mut inner = self.registry.lock().expect("registry poisoned");
+            inner.bindings = merged;
+        }
+        Ok(())
+    }
+
+    pub fn leave_registry_scope(&mut self) -> Result<()> {
+        if let Some(previous) = self.registry_scope_stack.pop() {
+            let mut inner = self.registry.lock().expect("registry poisoned");
+            inner.bindings = previous;
+        }
+        Ok(())
     }
 
     pub fn fork(&self) -> Context {

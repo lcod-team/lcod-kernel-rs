@@ -13,6 +13,7 @@ use crate::compose::{parse_compose, run_compose};
 use crate::registry::{Context, Registry};
 
 mod common;
+mod registry_scope;
 mod resolver;
 mod script;
 
@@ -21,6 +22,7 @@ const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
 pub fn register_tooling(registry: &Registry) {
     registry.register(CONTRACT_TEST_CHECKER, test_checker);
     script::register_script_contract(registry);
+    registry_scope::register_registry_scope(registry);
     register_resolver_helpers(registry);
 }
 
@@ -43,8 +45,10 @@ fn register_resolver_helpers(registry: &Registry) {
             registry.register(
                 id,
                 move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
-                    let steps = load_helper_compose(&compose_path, &context)
-                        .with_context(|| format!("unable to load resolver helper {}", id_arc.as_ref()))?;
+                    let steps =
+                        load_helper_compose(&compose_path, &context).with_context(|| {
+                            format!("unable to load resolver helper {}", id_arc.as_ref())
+                        })?;
                     run_compose(ctx, &steps, input)
                 },
             );
@@ -110,7 +114,10 @@ fn gather_candidates() -> Vec<Candidate> {
     out.push(Candidate {
         kind: CandidateKind::Legacy,
         path: manifest_dir
-            .join("..").join("lcod-spec").join("tooling").join("resolver"),
+            .join("..")
+            .join("lcod-spec")
+            .join("tooling")
+            .join("resolver"),
     });
     out
 }
@@ -139,7 +146,10 @@ fn load_workspace_definitions(root: &Path) -> Vec<ResolverHelperDef> {
         Ok(value) => value,
         Err(_) => return Vec::new(),
     };
-    let workspace_table = match workspace_value.get("workspace").and_then(TomlValue::as_table) {
+    let workspace_table = match workspace_value
+        .get("workspace")
+        .and_then(TomlValue::as_table)
+    {
         Some(table) => table,
         None => return Vec::new(),
     };
@@ -253,8 +263,14 @@ fn create_context(
     let base_path = manifest_id
         .and_then(|id| extract_path_from_id(id).map(|s| s.to_string()))
         .unwrap_or_else(|| {
-            let ns = manifest.get("namespace").and_then(TomlValue::as_str).unwrap_or("");
-            let name = manifest.get("name").and_then(TomlValue::as_str).unwrap_or("");
+            let ns = manifest
+                .get("namespace")
+                .and_then(TomlValue::as_str)
+                .unwrap_or("");
+            let name = manifest
+                .get("name")
+                .and_then(TomlValue::as_str)
+                .unwrap_or("");
             if ns.is_empty() {
                 name.to_string()
             } else if name.is_empty() {
@@ -344,10 +360,7 @@ fn extract_version_from_id(id: &str) -> Option<&str> {
     id.split('@').nth(1)
 }
 
-fn load_helper_compose(
-    path: &Path,
-    context: &HelperContext,
-) -> Result<Vec<crate::compose::Step>> {
+fn load_helper_compose(path: &Path, context: &HelperContext) -> Result<Vec<crate::compose::Step>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("unable to read compose file: {}", path.display()))?;
     let mut doc: Value = serde_yaml::from_str(&content)

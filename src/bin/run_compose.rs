@@ -168,22 +168,36 @@ fn load_manifest_context(dir: &Path) -> Option<ComposeContext> {
         .and_then(extract_path_from_id)
         .map(|s| s.to_string())
         .or_else(|| {
-            let ns = manifest.get("namespace").and_then(TomlValue::as_str).unwrap_or("");
-            let name = manifest.get("name").and_then(TomlValue::as_str).unwrap_or("");
+            let ns = manifest
+                .get("namespace")
+                .and_then(TomlValue::as_str)
+                .unwrap_or("");
+            let name = manifest
+                .get("name")
+                .and_then(TomlValue::as_str)
+                .unwrap_or("");
             let joined = [ns, name]
                 .iter()
                 .filter(|part| !part.is_empty())
                 .copied()
                 .collect::<Vec<_>>()
                 .join("/");
-            if joined.is_empty() { None } else { Some(joined) }
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
         })?;
 
     let version = manifest
         .get("version")
         .and_then(TomlValue::as_str)
         .map(|s| s.to_string())
-        .or_else(|| manifest_id.and_then(extract_version_from_id).map(|s| s.to_string()))
+        .or_else(|| {
+            manifest_id
+                .and_then(extract_version_from_id)
+                .map(|s| s.to_string())
+        })
         .unwrap_or_else(|| "0.0.0".to_string());
 
     let alias_map = manifest
