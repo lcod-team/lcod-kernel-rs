@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -6,7 +7,7 @@ use anyhow::{anyhow, Context as AnyhowContext, Result};
 use serde_json::{json, Map, Value};
 
 use crate::compose::{parse_compose, run_compose};
-use crate::registry::{Context, Registry};
+use crate::registry::{Context, Func, Registry};
 
 mod common;
 mod resolver;
@@ -17,6 +18,139 @@ const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
 pub fn register_tooling(registry: &Registry) {
     registry.register(CONTRACT_TEST_CHECKER, test_checker);
     script::register_script_contract(registry);
+    register_resolver_helpers(registry);
+}
+
+fn register_resolver_helpers(registry: &Registry) {
+    for (id, segments) in RESOLVER_HELPERS.iter() {
+        registry.register(
+            *id,
+            ResolverHelperFunc {
+                id: *id,
+                segments: *segments,
+            },
+        );
+    }
+}
+
+struct ResolverHelperFunc {
+    id: &'static str,
+    segments: &'static [&'static str],
+}
+
+impl Func for ResolverHelperFunc {
+    fn call(&self, ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+        let steps = load_helper_steps(self.segments)
+            .with_context(|| format!("unable to load resolver helper {}", self.id))?;
+        run_compose(ctx, &steps, input)
+    }
+}
+
+const HELPER_LOAD_DESCRIPTOR: [&str; 4] =
+    ["components", "internal", "load_descriptor", "compose.yaml"];
+const HELPER_LOAD_CONFIG: [&str; 4] = ["components", "internal", "load_config", "compose.yaml"];
+const HELPER_LOCK_PATH: [&str; 4] = ["components", "internal", "lock_path", "compose.yaml"];
+const HELPER_BUILD_LOCK: [&str; 4] = ["components", "internal", "build_lock", "compose.yaml"];
+
+const RESOLVER_HELPERS: [(&str, &[&str]); 4] = [
+    ("lcod://resolver/internal/load-descriptor@1", &HELPER_LOAD_DESCRIPTOR),
+    ("lcod://resolver/internal/load-config@1", &HELPER_LOAD_CONFIG),
+    ("lcod://resolver/internal/lock-path@1", &HELPER_LOCK_PATH),
+    ("lcod://resolver/internal/build-lock@1", &HELPER_BUILD_LOCK),
+];
+
+fn load_helper_steps(segments: &[&str]) -> Result<Vec<crate::compose::Step>> {
+    let mut rel_path = PathBuf::new();
+    for part in segments {
+        rel_path.push(part);
+    }
+
+    let mut errors = Vec::new();
+
+    if let Ok(components_path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
+        let candidate = PathBuf::from(components_path).join(&rel_path);
+        match load_compose_from_path(&candidate) {
+            Ok(steps) => return Ok(steps),
+            Err(err) => errors.push(format!(
+                "{}: {}",
+                candidate.display(),
+                err.to_string()
+            )),
+        }
+    }
+
+    if let Ok(resolver_path) = env::var("LCOD_RESOLVER_PATH") {
+        let candidate = PathBuf::from(resolver_path).join(&rel_path);
+        match load_compose_from_path(&candidate) {
+            Ok(steps) => return Ok(steps),
+            Err(err) => errors.push(format!(
+                "{}: {}",
+                candidate.display(),
+                err.to_string()
+            )),
+        }
+    }
+
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fallback = manifest_dir
+        .join("..")
+        .join("lcod-resolver")
+        .join(&rel_path);
+    match load_compose_from_path(&fallback) {
+        Ok(steps) => return Ok(steps),
+        Err(err) => errors.push(format!(
+            "{}: {}",
+            fallback.display(),
+            err.to_string()
+        )),
+    }
+
+    if let Ok(spec_path) = env::var("LCOD_SPEC_PATH") {
+        if let Some(helper_dir) = segments.get(2) {
+            let candidate = PathBuf::from(spec_path)
+                .join("tooling")
+                .join("resolver")
+                .join(helper_dir)
+                .join("compose.yaml");
+            match load_compose_from_path(&candidate) {
+                Ok(steps) => return Ok(steps),
+                Err(err) => errors.push(format!(
+                    "{}: {}",
+                    candidate.display(),
+                    err.to_string()
+                )),
+            }
+        }
+    }
+
+    let legacy_root = manifest_dir
+        .join("..")
+        .join("lcod-spec")
+        .join("tooling")
+        .join("resolver");
+    if let Some(helper_dir) = segments.get(2) {
+        let candidate = legacy_root.join(helper_dir).join("compose.yaml");
+        match load_compose_from_path(&candidate) {
+            Ok(steps) => return Ok(steps),
+            Err(err) => errors.push(format!(
+                "{}: {}",
+                candidate.display(),
+                err.to_string()
+            )),
+        }
+    }
+
+    if errors.is_empty() {
+        Err(anyhow!(
+            "unable to locate resolver helper compose at {}",
+            rel_path.display()
+        ))
+    } else {
+        Err(anyhow!(
+            "unable to locate resolver helper compose (searched {:?})",
+            errors
+        ))
+    }
 }
 
 pub use resolver::register_resolver_axioms;

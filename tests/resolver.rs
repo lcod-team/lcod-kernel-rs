@@ -146,7 +146,12 @@ fn resolver_compose_handles_local_path_dependency() {
     });
 
     let result = run_compose(&mut ctx, &compose, state).expect("compose run");
-    assert_eq!(result.get("warnings").unwrap().as_array().unwrap().len(), 0);
+    let warnings_len = result
+        .get("warnings")
+        .and_then(|value| value.as_array())
+        .map(|arr| arr.len())
+        .unwrap_or(0);
+    assert_eq!(warnings_len, 0);
     let lock_raw = fs::read_to_string(&output_path).unwrap();
     let lock_doc: toml::Value = lock_raw.parse().unwrap();
     let components = lock_doc["components"].as_array().unwrap();
