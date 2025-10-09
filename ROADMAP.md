@@ -27,7 +27,7 @@ Delivered:
 
 Next:
 - [ ] M3-04b Finalise advanced bindings (git/http, manifest packaging) and document in `docs/runtime-rust.md`.
-- [ ] Extend scoped registries to handle inline helper/component registration once the spec requirements are defined.
+- [x] Extend scoped registries to handle inline helper/component registration (inline `compose` snippets registered ephemerally within the scope).
 
 ## M4 — Observability & logging
 - [ ] Integrate `lcod://tooling/log@1` once defined in the spec (structured log serialization + host bridges).

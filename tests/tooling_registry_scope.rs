@@ -113,6 +113,54 @@ fn registry_scope_isolates_helper_registration() -> Result<()> {
 }
 
 #[test]
+fn registry_scope_registers_inline_components() -> Result<()> {
+    let registry = setup_registry();
+    let mut ctx = registry.context();
+
+    let compose = json!({
+        "compose": [
+            {
+                "call": "lcod://tooling/registry/scope@1",
+                "in": {
+                    "components": [
+                        {
+                            "id": "lcod://helper/inline-temp@1",
+                            "compose": [
+                                {
+                                    "call": "lcod://impl/demo/scoped@1",
+                                    "out": { "value": "result" }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "children": [
+                    {
+                        "call": "lcod://helper/inline-temp@1",
+                        "out": { "scoped": "value" }
+                    }
+                ],
+                "out": { "scopedValue": "scoped" }
+            }
+        ]
+    });
+
+    let steps = parse_compose(compose.get("compose").unwrap())?;
+    let result = run_compose(&mut ctx, &steps, serde_json::Value::Null)?;
+    let obj = result.as_object().unwrap();
+    assert_eq!(obj.get("scopedValue").unwrap().as_str().unwrap(), "scoped");
+
+    let check = ctx.call(
+        "lcod://helper/inline-temp@1",
+        serde_json::Value::Null,
+        None,
+    );
+    assert!(check.is_err());
+
+    Ok(())
+}
+
+#[test]
 fn registry_scope_restores_bindings_on_error() -> Result<()> {
     let registry = setup_registry();
     let mut ctx = registry.context();
