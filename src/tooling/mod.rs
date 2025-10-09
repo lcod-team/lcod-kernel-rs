@@ -50,12 +50,20 @@ const HELPER_LOAD_DESCRIPTOR: [&str; 4] =
     ["components", "internal", "load_descriptor", "compose.yaml"];
 const HELPER_LOAD_CONFIG: [&str; 4] = ["components", "internal", "load_config", "compose.yaml"];
 const HELPER_LOCK_PATH: [&str; 4] = ["components", "internal", "lock_path", "compose.yaml"];
+const HELPER_PREPARE_CONFIG: [&str; 4] = ["components", "internal", "prepare_config", "compose.yaml"];
+const HELPER_PREPARE_CACHE: [&str; 4] = ["components", "internal", "prepare_cache", "compose.yaml"];
+const HELPER_RESOLVE_DEPS: [&str; 4] = ["components", "internal", "resolve_dependencies", "compose.yaml"];
+const HELPER_SUMMARIZE_RESULT: [&str; 4] = ["components", "internal", "summarize_result", "compose.yaml"];
 const HELPER_BUILD_LOCK: [&str; 4] = ["components", "internal", "build_lock", "compose.yaml"];
 
-const RESOLVER_HELPERS: [(&str, &[&str]); 4] = [
+const RESOLVER_HELPERS: [(&str, &[&str]); 8] = [
     ("lcod://resolver/internal/load-descriptor@1", &HELPER_LOAD_DESCRIPTOR),
     ("lcod://resolver/internal/load-config@1", &HELPER_LOAD_CONFIG),
     ("lcod://resolver/internal/lock-path@1", &HELPER_LOCK_PATH),
+    ("lcod://resolver/internal/prepare-config@1", &HELPER_PREPARE_CONFIG),
+    ("lcod://resolver/internal/prepare-cache@1", &HELPER_PREPARE_CACHE),
+    ("lcod://resolver/internal/resolve-dependencies@1", &HELPER_RESOLVE_DEPS),
+    ("lcod://resolver/internal/summarize-result@1", &HELPER_SUMMARIZE_RESULT),
     ("lcod://resolver/internal/build-lock@1", &HELPER_BUILD_LOCK),
 ];
 
