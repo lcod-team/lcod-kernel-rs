@@ -31,6 +31,12 @@ impl RegistryInner {
     }
 }
 
+#[derive(Clone)]
+struct RegistrySnapshot {
+    bindings: HashMap<String, String>,
+    funcs: HashMap<String, Arc<dyn Func>>,
+}
+
 pub struct Registry {
     inner: Arc<Mutex<RegistryInner>>,
 }
@@ -112,7 +118,7 @@ pub struct Context {
     run_slot_handler: Option<Box<dyn SlotExecutor + 'static>>,
     streams: StreamManager,
     http_hosts: HttpHostManager,
-    registry_scope_stack: Vec<HashMap<String, String>>,
+    registry_scope_stack: Vec<RegistrySnapshot>,
 }
 
 impl Context {
@@ -205,28 +211,33 @@ impl Context {
         &mut self,
         bindings: Option<HashMap<String, String>>,
     ) -> Result<()> {
-        let current = {
+        let snapshot = {
             let inner = self.registry.lock().expect("registry poisoned");
-            inner.bindings.clone()
+            RegistrySnapshot {
+                bindings: inner.bindings.clone(),
+                funcs: inner.funcs.clone(),
+            }
         };
-        self.registry_scope_stack.push(current.clone());
-        let mut merged = current;
+        let mut merged_bindings = snapshot.bindings.clone();
         if let Some(overrides) = bindings {
             for (contract, implementation) in overrides {
-                merged.insert(contract, implementation);
+                merged_bindings.insert(contract, implementation);
             }
         }
         {
             let mut inner = self.registry.lock().expect("registry poisoned");
-            inner.bindings = merged;
+            inner.bindings = merged_bindings;
+            inner.funcs = snapshot.funcs.clone();
         }
+        self.registry_scope_stack.push(snapshot);
         Ok(())
     }
 
     pub fn leave_registry_scope(&mut self) -> Result<()> {
         if let Some(previous) = self.registry_scope_stack.pop() {
             let mut inner = self.registry.lock().expect("registry poisoned");
-            inner.bindings = previous;
+            inner.bindings = previous.bindings;
+            inner.funcs = previous.funcs;
         }
         Ok(())
     }

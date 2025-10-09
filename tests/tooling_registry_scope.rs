@@ -20,6 +20,17 @@ fn setup_registry() -> Registry {
         "lcod://impl/demo/error@1",
         |_: &mut Context, _input, _meta| Err(anyhow::anyhow!("boom")),
     );
+    registry.register(
+        "lcod://helper/register-scoped@1",
+        |ctx: &mut Context, _input, _meta| {
+            let scoped = ctx.registry_clone();
+            scoped.register(
+                "lcod://helper/scoped-temp@1",
+                |_: &mut Context, _input, _meta| Ok(json!({ "result": "scoped-helper" })),
+            );
+            Ok(serde_json::Value::Null)
+        },
+    );
     registry.set_binding("lcod://contract/demo/value@1", "lcod://impl/demo/base@1");
 
     registry
@@ -61,6 +72,42 @@ fn registry_scope_applies_temporary_bindings_and_restores() -> Result<()> {
     let obj = result.as_object().unwrap();
     assert_eq!(obj.get("scopedResult").unwrap().as_str().unwrap(), "scoped");
     assert_eq!(obj.get("globalResult").unwrap().as_str().unwrap(), "base");
+
+    Ok(())
+}
+
+#[test]
+fn registry_scope_isolates_helper_registration() -> Result<()> {
+    let registry = setup_registry();
+    let mut ctx = registry.context();
+
+    let compose = json!({
+        "compose": [
+            {
+                "call": "lcod://tooling/registry/scope@1",
+                "children": [
+                    { "call": "lcod://helper/register-scoped@1" },
+                    {
+                        "call": "lcod://helper/scoped-temp@1",
+                        "out": { "scoped": "result" }
+                    }
+                ],
+                "out": { "scopeResult": "scoped" }
+            }
+        ]
+    });
+
+    let steps = parse_compose(compose.get("compose").unwrap())?;
+    let result = run_compose(&mut ctx, &steps, serde_json::Value::Null)?;
+    let obj = result.as_object().unwrap();
+    assert_eq!(obj.get("scopeResult").unwrap().as_str().unwrap(), "scoped-helper");
+
+    let check = ctx.call(
+        "lcod://helper/scoped-temp@1",
+        serde_json::Value::Null,
+        None,
+    );
+    assert!(check.is_err());
 
     Ok(())
 }
