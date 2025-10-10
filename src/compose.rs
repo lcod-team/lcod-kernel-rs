@@ -46,6 +46,12 @@ fn merge_map_with_fallback(target: &mut Map<String, Value>, source: &Map<String,
     for (key, source_value) in source {
         match target.get_mut(key) {
             Some(target_value) => {
+                if let Value::Object(target_obj) = target_value {
+                    if let Value::Object(source_obj) = source_value {
+                        merge_map_with_fallback(target_obj, source_obj);
+                        continue;
+                    }
+                }
                 if target_value.is_null() && !source_value.is_null() {
                     *target_value = source_value.clone();
                 }
@@ -665,6 +671,9 @@ fn run_steps(
     slot: &Map<String, Value>,
 ) -> Result<Map<String, Value>> {
     for step in steps {
+        if step.call == "lcod://tooling/script@1" {
+            // no-op: retained escalation point for future diagnostics
+        }
         let input_map = build_input(step, &state, slot);
         let input_value = Value::Object(input_map);
         let meta = build_meta(step, slot);

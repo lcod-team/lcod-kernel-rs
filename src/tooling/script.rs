@@ -50,6 +50,26 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
         .get("input")
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()));
+
+    let needs_fallback = matches!(&initial_state, Value::Object(map) if map.is_empty())
+        && input.get("input").is_none();
+    if needs_fallback {
+        if let Value::Object(obj) = input.clone() {
+            let mut fallback = Map::new();
+            for (key, value) in obj {
+                match key.as_str() {
+                    "source" | "language" | "timeoutMs" | "tools" | "imports" | "bindings"
+                    | "config" | "meta" | "streams" | "input" => continue,
+                    _ => {
+                        fallback.insert(key, value);
+                    }
+                }
+            }
+            if !fallback.is_empty() {
+                initial_state = Value::Object(fallback);
+            }
+        }
+    }
     if let Some(stream_specs) = input.get("streams") {
         common::register_streams(ctx, &mut initial_state, stream_specs)?;
     }

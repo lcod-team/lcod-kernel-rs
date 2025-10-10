@@ -50,12 +50,29 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
             registry.register(
                 "lcod://impl/testing/log-captured@1",
                 |_ctx: &mut Context, _input: Value, _meta: Option<Value>| {
-                    let logs = _ctx
+                    let logs_vec = _ctx
                         .spec_captured_logs()
                         .iter()
                         .cloned()
                         .collect::<Vec<Value>>();
-                    Ok(Value::Array(logs))
+                    Ok(Value::Array(logs_vec))
+                },
+            );
+            continue;
+        }
+
+        if component_id == "lcod://impl/testing/log-capture@1" {
+            registry.register(
+                "lcod://impl/testing/log-capture@1",
+                |ctx: &mut Context, input: Value, _meta: Option<Value>| {
+                    let entry_map = match input {
+                        Value::Object(map) => map,
+                        Value::Null => Map::new(),
+                        other => return Ok(other),
+                    };
+                    let cloned = Value::Object(entry_map.clone());
+                    ctx.push_spec_log(cloned.clone());
+                    Ok(cloned)
                 },
             );
             continue;
@@ -63,13 +80,22 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
 
         if let Some(compose_value) = obj.get("compose").and_then(Value::as_array) {
             let compose_json = Value::Array(compose_value.clone());
-            let steps = parse_compose(&compose_json).map_err(|err| {
+            let mut steps = parse_compose(&compose_json).map_err(|err| {
                 anyhow!(
                     "failed to parse inline component \"{}\": {}",
                     component_id,
                     err
                 )
             })?;
+            for step in &mut steps {
+                if step.call == "lcod://tooling/script@1" {
+                    if let Some(value) = step.inputs.get_mut("input") {
+                        if matches!(value, Value::Object(map) if map.is_empty()) {
+                            *value = Value::String("__lcod_state__".to_string());
+                        }
+                    }
+                }
+            }
             let steps_arc = Arc::new(steps);
             let id_owned = component_id.to_string();
             let registry_clone = registry.clone();
@@ -82,15 +108,6 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
                         other => other,
                     };
                     let result = run_compose(ctx, steps_arc.as_ref(), seed)?;
-                    if id_owned == "lcod://impl/testing/log-capture@1" {
-                        if let Value::Object(map) = &result {
-                            if let Some(entry) = map.get("entry") {
-                                ctx.push_spec_log(entry.clone());
-                            }
-                        } else {
-                            ctx.push_spec_log(result.clone());
-                        }
-                    }
                     if let Value::Object(map) = &result {
                         if let Some(entry) = map.get("entry") {
                             return Ok(entry.clone());
