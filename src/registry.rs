@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::http::manager::{HttpHostControl, HttpHostManager};
 use crate::streams::StreamManager;
@@ -99,7 +99,21 @@ impl Registry {
     ) -> Result<Value> {
         let func = {
             let inner = self.inner.lock().expect("registry poisoned");
-            inner.funcs.get(name).cloned()
+            if let Some(entry) = inner.funcs.get(name) {
+                Some(entry.clone())
+            } else if name.starts_with("lcod://contract/") {
+                if let Some(binding) = inner.bindings.get(name) {
+                    if binding != name {
+                        inner.funcs.get(binding).cloned()
+                    } else {
+                        inner.funcs.get(name).cloned()
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         };
         let Some(func) = func else {
             return Err(anyhow!("function not found: {name}"));
@@ -119,6 +133,8 @@ pub struct Context {
     streams: StreamManager,
     http_hosts: HttpHostManager,
     registry_scope_stack: Vec<RegistrySnapshot>,
+    log_tag_stack: Vec<Map<String, Value>>,
+    spec_captured_logs: Vec<Value>,
 }
 
 impl Context {
@@ -130,19 +146,26 @@ impl Context {
             streams: StreamManager::new(),
             http_hosts: HttpHostManager::new(),
             registry_scope_stack: Vec::new(),
+            log_tag_stack: Vec::new(),
+            spec_captured_logs: Vec::new(),
         }
     }
 
     pub fn call(&mut self, name: &str, input: Value, meta: Option<Value>) -> Result<Value> {
         let func = {
             let inner = self.registry.lock().expect("registry poisoned");
-            if let Some(func) = inner.funcs.get(name) {
-                Some(func.clone())
+            if let Some(entry) = inner.funcs.get(name) {
+                Some(entry.clone())
             } else if name.starts_with("lcod://contract/") {
-                inner
-                    .bindings
-                    .get(name)
-                    .and_then(|binding| inner.funcs.get(binding).cloned())
+                if let Some(binding) = inner.bindings.get(name) {
+                    if binding != name {
+                        inner.funcs.get(binding).cloned()
+                    } else {
+                        inner.funcs.get(name).cloned()
+                    }
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -243,13 +266,44 @@ impl Context {
     }
 
     pub fn fork(&self) -> Context {
-        Context::new(self.registry.clone())
+        let mut cloned = Context::new(self.registry.clone());
+        cloned.log_tag_stack = self.log_tag_stack.clone();
+        cloned.spec_captured_logs = self.spec_captured_logs.clone();
+        cloned
     }
 
     pub fn registry_clone(&self) -> Registry {
         Registry {
             inner: self.registry.clone(),
         }
+    }
+
+    pub fn push_log_tags(&mut self, tags: Map<String, Value>) {
+        if tags.is_empty() {
+            return;
+        }
+        self.log_tag_stack.push(tags);
+    }
+
+    pub fn pop_log_tags(&mut self) {
+        self.log_tag_stack.pop();
+    }
+
+    pub fn log_tag_stack(&self) -> &[Map<String, Value>] {
+        &self.log_tag_stack
+    }
+
+    pub fn binding_for(&self, contract: &str) -> Option<String> {
+        let inner = self.registry.lock().expect("registry poisoned");
+        inner.bindings.get(contract).cloned()
+    }
+
+    pub fn push_spec_log(&mut self, entry: Value) {
+        self.spec_captured_logs.push(entry);
+    }
+
+    pub fn spec_captured_logs(&self) -> &[Value] {
+        &self.spec_captured_logs
     }
 }
 

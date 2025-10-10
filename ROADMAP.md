@@ -30,7 +30,8 @@ Next:
 - [x] Extend scoped registries to handle inline helper/component registration (inline `compose` snippets registered ephemerally within the scope).
 
 ## M4 — Observability & logging
-- [ ] Integrate `lcod://tooling/log@1` once defined in the spec (structured log serialization + host bridges).
+- [x] Integrate `lcod://tooling/log@1` once defined in the spec (structured log serialization + host bridges).
+- [x] tooling/script: forward `console.*` calls to the logging contract so script logs flow through `tooling/log@1`.
 - [ ] Expose a trace mode (`--trace`) in `run_compose` to inspect scope/slot mutations.
 
 ## M5 — Packaging & distribution

@@ -12,6 +12,7 @@ use crate::registry::{Context, Registry};
 use super::common;
 
 const CONTRACT_ID: &str = "lcod://tooling/script@1";
+const LOG_CONTRACT_ID: &str = "lcod://contract/tooling/log@1";
 
 #[derive(Clone)]
 struct ToolDef {
@@ -225,6 +226,42 @@ fn execute_script(
         })
         .map_err(|err| anyhow!("failed to register api.log bridge: {err}"))?;
 
+    let console_messages = Rc::clone(&messages);
+    let ctx_ptr_console = ctx as *mut Context as usize;
+    context
+        .add_callback(
+            "__lcod_console",
+            move |args: quick_js::Arguments| -> Result<JsValue, String> {
+                let mut values = args.into_vec().into_iter();
+                let method_val = values
+                    .next()
+                    .ok_or_else(|| "console handler missing method".to_string())?;
+                let method = method_val
+                    .into_string()
+                    .unwrap_or_else(|| "log".to_string());
+                let rendered = values.map(format_js_value).collect::<Vec<_>>();
+                let joined = rendered.join(" ");
+                let message = if joined.trim().is_empty() {
+                    format!("[console.{method}]")
+                } else {
+                    joined
+                };
+                if let Ok(mut buffer) = console_messages.lock() {
+                    buffer.push(message.clone());
+                }
+                let payload = json!({
+                    "level": map_console_level(&method),
+                    "message": message
+                });
+                let host_ctx = unsafe { &mut *(ctx_ptr_console as *mut Context) };
+                if let Err(_err) = host_ctx.call(LOG_CONTRACT_ID, payload, None) {
+                    // console.* must remain best-effort; swallow logging failures.
+                }
+                Ok(JsValue::Null)
+            },
+        )
+        .map_err(|err| anyhow!("failed to register console bridge: {err}"))?;
+
     let config_for_callback = Arc::clone(&config);
     context
         .add_callback(
@@ -321,6 +358,15 @@ fn execute_script(
                     config: (path, fallback) => globalThis.__lcod_config(path, fallback),
                     run: (name, payload, options) => Promise.resolve(globalThis.__lcod_run(name, payload ?? {}, options ?? {}))
                 };
+            };
+
+            globalThis.console = {
+                log: (...args) => { globalThis.__lcod_console('log', ...args); },
+                info: (...args) => { globalThis.__lcod_console('info', ...args); },
+                warn: (...args) => { globalThis.__lcod_console('warn', ...args); },
+                error: (...args) => { globalThis.__lcod_console('error', ...args); },
+                debug: (...args) => { globalThis.__lcod_console('debug', ...args); },
+                trace: (...args) => { globalThis.__lcod_console('trace', ...args); }
             };
 
             globalThis.__lcod_make_imports = function () {
@@ -457,6 +503,16 @@ fn format_js_value(value: JsValue) -> String {
         #[cfg(feature = "bigint")]
         JsValue::BigInt(big) => big.to_string(),
         JsValue::__NonExhaustive => "[unknown]".to_string(),
+    }
+}
+
+fn map_console_level(method: &str) -> &'static str {
+    match method {
+        "error" => "error",
+        "warn" => "warn",
+        "debug" => "debug",
+        "trace" => "trace",
+        _ => "info",
     }
 }
 

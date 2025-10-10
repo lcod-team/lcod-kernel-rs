@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::sync::{Arc, Mutex};
 use lcod_kernel_rs::registry::{Context, Registry, SlotExecutor};
 use lcod_kernel_rs::tooling::register_tooling;
 use serde_json::{json, Value};
@@ -186,5 +187,66 @@ fn script_imports_aliases() {
     assert_eq!(
         result.get("result"),
         Some(&Value::Number(serde_json::Number::from(18)))
+    );
+}
+
+#[test]
+fn script_console_routes_to_logging_contract() {
+    let registry = Registry::new();
+    register_tooling(&registry);
+
+    let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let capture_clone = Arc::clone(&captured);
+    registry.register(
+        "lcod://impl/testing/log-capture@1",
+        move |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
+            capture_clone
+                .lock()
+                .expect("capture mutex")
+                .push(input.clone());
+            Ok(input)
+        },
+    );
+    registry.set_binding(
+        "lcod://contract/tooling/log@1",
+        "lcod://impl/testing/log-capture@1",
+    );
+
+    let mut ctx = registry.context();
+    let request = json!({
+        "source": "async () => { console.log('from script'); console.error('oops', { code: 500 }); return { ok: true }; }"
+    });
+
+    let result = ctx
+        .call("lcod://tooling/script@1", request, None)
+        .expect("script execution");
+
+    assert_eq!(result.get("ok"), Some(&Value::Bool(true)));
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("script messages");
+    assert!(messages.iter().any(|entry| entry == "from script"));
+
+    let captured = captured.lock().expect("capture guard");
+    assert_eq!(captured.len(), 2);
+    let first = captured[0]
+        .as_object()
+        .expect("first log payload");
+    assert_eq!(first.get("level"), Some(&Value::String("info".into())));
+    assert_eq!(
+        first.get("message"),
+        Some(&Value::String("from script".into()))
+    );
+    let second = captured[1]
+        .as_object()
+        .expect("second log payload");
+    assert_eq!(second.get("level"), Some(&Value::String("error".into())));
+    assert!(
+        second
+            .get("message")
+            .and_then(Value::as_str)
+            .map(|msg| msg.contains("oops"))
+            .unwrap_or(false)
     );
 }

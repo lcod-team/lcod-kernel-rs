@@ -13,6 +13,7 @@ use crate::compose::{parse_compose, run_compose};
 use crate::registry::{Context, Registry};
 
 mod common;
+mod logging;
 mod registry_scope;
 mod resolver;
 mod script;
@@ -23,6 +24,7 @@ pub fn register_tooling(registry: &Registry) {
     registry.register(CONTRACT_TEST_CHECKER, test_checker);
     script::register_script_contract(registry);
     registry_scope::register_registry_scope(registry);
+    logging::register_logging(registry);
     register_resolver_helpers(registry);
 }
 

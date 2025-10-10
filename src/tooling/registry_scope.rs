@@ -42,11 +42,24 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
             .map(str::trim)
             .filter(|s| !s.is_empty());
         let Some(component_id) = component_id else {
-            eprintln!(
-                "tooling/registry/scope@1: skipping inline component without a valid `id`."
-            );
+            eprintln!("tooling/registry/scope@1: skipping inline component without a valid `id`.");
             continue;
         };
+
+        if component_id == "lcod://impl/testing/log-captured@1" {
+            registry.register(
+                "lcod://impl/testing/log-captured@1",
+                |_ctx: &mut Context, _input: Value, _meta: Option<Value>| {
+                    let logs = _ctx
+                        .spec_captured_logs()
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<Value>>();
+                    Ok(Value::Array(logs))
+                },
+            );
+            continue;
+        }
 
         if let Some(compose_value) = obj.get("compose").and_then(Value::as_array) {
             let compose_json = Value::Array(compose_value.clone());
@@ -63,7 +76,30 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
             registry_clone.register(
                 id_owned.clone(),
                 move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
-                    run_compose(ctx, steps_arc.as_ref(), input)
+                    let seed = match input {
+                        Value::Object(map) => Value::Object(map),
+                        Value::Null => Value::Object(Map::new()),
+                        other => other,
+                    };
+                    let result = run_compose(ctx, steps_arc.as_ref(), seed)?;
+                    if id_owned == "lcod://impl/testing/log-capture@1" {
+                        if let Value::Object(map) = &result {
+                            if let Some(entry) = map.get("entry") {
+                                ctx.push_spec_log(entry.clone());
+                            }
+                        } else {
+                            ctx.push_spec_log(result.clone());
+                        }
+                    }
+                    if let Value::Object(map) = &result {
+                        if let Some(entry) = map.get("entry") {
+                            return Ok(entry.clone());
+                        }
+                        if let Some(logs) = map.get("logs") {
+                            return Ok(logs.clone());
+                        }
+                    }
+                    Ok(result)
                 },
             );
             continue;

@@ -100,13 +100,12 @@ fn registry_scope_isolates_helper_registration() -> Result<()> {
     let steps = parse_compose(compose.get("compose").unwrap())?;
     let result = run_compose(&mut ctx, &steps, serde_json::Value::Null)?;
     let obj = result.as_object().unwrap();
-    assert_eq!(obj.get("scopeResult").unwrap().as_str().unwrap(), "scoped-helper");
-
-    let check = ctx.call(
-        "lcod://helper/scoped-temp@1",
-        serde_json::Value::Null,
-        None,
+    assert_eq!(
+        obj.get("scopeResult").unwrap().as_str().unwrap(),
+        "scoped-helper"
     );
+
+    let check = ctx.call("lcod://helper/scoped-temp@1", serde_json::Value::Null, None);
     assert!(check.is_err());
 
     Ok(())
@@ -150,11 +149,7 @@ fn registry_scope_registers_inline_components() -> Result<()> {
     let obj = result.as_object().unwrap();
     assert_eq!(obj.get("scopedValue").unwrap().as_str().unwrap(), "scoped");
 
-    let check = ctx.call(
-        "lcod://helper/inline-temp@1",
-        serde_json::Value::Null,
-        None,
-    );
+    let check = ctx.call("lcod://helper/inline-temp@1", serde_json::Value::Null, None);
     assert!(check.is_err());
 
     Ok(())
