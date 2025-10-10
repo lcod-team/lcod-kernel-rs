@@ -56,6 +56,81 @@ fn register_resolver_helpers(registry: &Registry) {
             );
         }
     }
+
+    let dynamic_registry = registry.clone();
+    registry.register(
+        "lcod://tooling/resolver/register@1",
+        move |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
+            let components = input
+                .get("components")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut warnings = Vec::new();
+            let mut count = 0usize;
+
+            for component in components {
+                let Some(id_raw) = component.get("id").and_then(Value::as_str) else {
+                    warnings.push("resolver/register: component missing id".to_string());
+                    continue;
+                };
+                if !id_raw.starts_with("lcod://") {
+                    warnings.push(format!(
+                        "resolver/register: component id must be canonical, got {}",
+                        id_raw
+                    ));
+                    continue;
+                }
+
+                let steps = if let Some(inline) = component.get("compose") {
+                    parse_compose(inline).with_context(|| {
+                        format!(
+                            "resolver/register: invalid inline compose for {}",
+                            id_raw
+                        )
+                    })?
+                } else if let Some(path_str) = component.get("composePath").and_then(Value::as_str)
+                {
+                    let path = PathBuf::from(path_str);
+                    load_compose_from_path(&path).with_context(|| {
+                        format!(
+                            "resolver/register: failed to load compose for {} from {}",
+                            id_raw,
+                            path.display()
+                        )
+                    })?
+                } else {
+                    warnings.push(format!(
+                        "resolver/register: component {} missing compose data",
+                        id_raw
+                    ));
+                    continue;
+                };
+
+                let steps_arc = Arc::new(steps);
+                let id_string = id_raw.to_string();
+                let registry_clone = dynamic_registry.clone();
+                registry_clone.register(
+                    id_string.clone(),
+                    move |ctx_inner: &mut Context, input_inner: Value, _meta_inner: Option<Value>| {
+                        let steps = Arc::clone(&steps_arc);
+                        run_compose(ctx_inner, &steps, input_inner)
+                    },
+                );
+                count += 1;
+            }
+
+            let mut result = Map::new();
+            result.insert("registered".to_string(), Value::from(count as u64));
+            if !warnings.is_empty() {
+                result.insert(
+                    "warnings".to_string(),
+                    Value::Array(warnings.into_iter().map(Value::from).collect()),
+                );
+            }
+            Ok(Value::Object(result))
+        },
+    );
 }
 
 #[derive(Clone)]
@@ -85,13 +160,14 @@ struct Candidate {
 
 fn build_helper_definitions() -> Vec<ResolverHelperDef> {
     let candidates = gather_candidates();
+    let mut collected = Vec::new();
     for candidate in candidates {
         let defs = load_definitions_for_candidate(&candidate);
         if !defs.is_empty() {
-            return defs;
+            collected.extend(defs);
         }
     }
-    Vec::new()
+    collected
 }
 
 fn gather_candidates() -> Vec<Candidate> {
@@ -120,6 +196,14 @@ fn gather_candidates() -> Vec<Candidate> {
             .join("lcod-spec")
             .join("tooling")
             .join("resolver"),
+    });
+    out.push(Candidate {
+        kind: CandidateKind::Legacy,
+        path: manifest_dir
+            .join("..")
+            .join("lcod-spec")
+            .join("tooling")
+            .join("registry"),
     });
     out
 }
