@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -28,35 +29,83 @@ pub fn register_tooling(registry: &Registry) {
     register_resolver_helpers(registry);
 }
 
-fn register_resolver_helpers(registry: &Registry) {
-    let defs = build_helper_definitions();
-    if defs.is_empty() {
-        eprintln!("warning: no resolver helper definitions found; resolver helpers not registered");
-        return;
-    }
-    for def in defs {
-        let compose_path = Arc::new(def.compose_path);
-        let context = Arc::new(def.context);
-        let ids: Vec<String> = std::iter::once(def.id.clone())
-            .chain(def.aliases.into_iter())
-            .collect();
-        for id in ids {
-            let id_arc = Arc::new(id.clone());
-            let compose_path = Arc::clone(&compose_path);
-            let context = Arc::clone(&context);
-            registry.register(
-                id,
-                move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
-                    let steps =
-                        load_helper_compose(&compose_path, &context).with_context(|| {
-                            format!("unable to load resolver helper {}", id_arc.as_ref())
-                        })?;
-                    run_compose(ctx, &steps, input)
-                },
-            );
+fn resolve_spec_root() -> Option<PathBuf> {
+    if let Ok(env_path) = env::var("SPEC_REPO_PATH") {
+        let candidate = PathBuf::from(env_path);
+        if candidate.is_dir() {
+            return Some(candidate);
         }
     }
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut candidates = Vec::new();
+    candidates.push(manifest_dir.join("..").join("lcod-spec"));
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("../lcod-spec"));
+        candidates.push(cwd.join("../../lcod-spec"));
+    }
+    for candidate in candidates {
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
 
+thread_local! {
+    static SPEC_REGISTER_GUARD: Cell<bool> = Cell::new(false);
+}
+
+fn run_spec_register_components(registry: &Registry, spec_root_override: Option<&str>) -> Result<Value> {
+    let skip = SPEC_REGISTER_GUARD.with(|flag| {
+        if flag.get() {
+            true
+        } else {
+            flag.set(true);
+            false
+        }
+    });
+    if skip {
+        return Ok(Value::Null);
+    }
+
+    let result = (|| {
+        let spec_root = if let Some(override_path) = spec_root_override {
+            let candidate = PathBuf::from(override_path);
+            if candidate.is_absolute() {
+                candidate
+            } else {
+                env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(candidate)
+            }
+        } else {
+            resolve_spec_root().ok_or_else(|| {
+                anyhow!(
+                    "[tooling/registry] Unable to locate lcod-spec repository; helpers not registered"
+                )
+            })?
+        };
+        let register_path = spec_root.join("tooling/resolver/register_components/compose.yaml");
+        if !register_path.is_file() {
+            return Err(anyhow!(
+                "[tooling/registry] register_components compose missing: {}",
+                register_path.display()
+            ));
+        }
+        let steps = load_compose_from_path(&register_path)?;
+        let mut ctx = registry.context();
+        run_compose(
+            &mut ctx,
+            &steps,
+            json!({ "specRoot": spec_root.to_string_lossy() }),
+        )
+    })();
+
+    SPEC_REGISTER_GUARD.with(|flag| flag.set(false));
+    result
+}
+
+fn register_resolver_helpers(registry: &Registry) {
     let dynamic_registry = registry.clone();
     registry.register(
         "lcod://tooling/resolver/register@1",
@@ -131,6 +180,46 @@ fn register_resolver_helpers(registry: &Registry) {
             Ok(Value::Object(result))
         },
     );
+
+    if let Err(err) = run_spec_register_components(registry, None) {
+        eprintln!("{err}");
+    }
+
+    let components_registry = registry.clone();
+    registry.register(
+        "lcod://tooling/resolver/register_components@0.1.0",
+        move |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
+            let spec_root = input
+                .get("specRoot")
+                .and_then(Value::as_str);
+            run_spec_register_components(&components_registry, spec_root)
+        },
+    );
+
+    let defs = build_helper_definitions();
+    for def in defs {
+        let compose_path = Arc::new(def.compose_path);
+        let context = Arc::new(def.context);
+        let ids: Vec<String> = std::iter::once(def.id.clone())
+            .chain(def.aliases.into_iter())
+            .collect();
+        for id in ids {
+            let id_arc = Arc::new(id.clone());
+            let compose_path = Arc::clone(&compose_path);
+            let context = Arc::clone(&context);
+            registry.register(
+                id,
+                move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
+                    let steps =
+                        load_helper_compose(&compose_path, &context).with_context(|| {
+                            format!("unable to load resolver helper {}", id_arc.as_ref())
+                        })?;
+                    run_compose(ctx, &steps, input)
+                },
+            );
+        }
+    }
+
 }
 
 #[derive(Clone)]
@@ -150,7 +239,6 @@ struct ResolverHelperDef {
 enum CandidateKind {
     Root,
     Components,
-    Legacy,
 }
 
 struct Candidate {
@@ -189,22 +277,6 @@ fn gather_candidates() -> Vec<Candidate> {
         kind: CandidateKind::Root,
         path: manifest_dir.join("..").join("lcod-resolver"),
     });
-    out.push(Candidate {
-        kind: CandidateKind::Legacy,
-        path: manifest_dir
-            .join("..")
-            .join("lcod-spec")
-            .join("tooling")
-            .join("resolver"),
-    });
-    out.push(Candidate {
-        kind: CandidateKind::Legacy,
-        path: manifest_dir
-            .join("..")
-            .join("lcod-spec")
-            .join("tooling")
-            .join("registry"),
-    });
     out
 }
 
@@ -219,7 +291,6 @@ fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDe
             }
         }
         CandidateKind::Components => load_legacy_component_definitions(&candidate.path),
-        CandidateKind::Legacy => load_legacy_component_definitions(&candidate.path),
     }
 }
 
