@@ -18,6 +18,11 @@ jobs:
         with:
           repository: lcod-team/lcod-spec
           path: lcod-spec
+      - name: Checkout resolver
+        uses: actions/checkout@v4
+        with:
+          repository: lcod-team/lcod-resolver
+          path: lcod-resolver
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -25,6 +30,9 @@ jobs:
           override: true
           profile: minimal
       - name: Run cargo test
+        env:
+          SPEC_REPO_PATH: ${{ github.workspace }}/lcod-spec
+          LCOD_RESOLVER_PATH: ${{ github.workspace }}/lcod-resolver
         run: cargo test
       - name: Run spec fixtures
         env:
