@@ -39,8 +39,20 @@ impl Drop for EnvGuard {
 
 #[test]
 fn catalog_generation_via_runtime_bundle() -> Result<()> {
-    let spec_root = locate_repo("SPEC_REPO_PATH", "lcod-spec")?;
-    let resolver_root = locate_repo("LCOD_RESOLVER_PATH", "lcod-resolver")?;
+    let spec_root = match locate_repo("SPEC_REPO_PATH", "lcod-spec") {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("runtime bundle test skipped (spec repo missing): {err}");
+            return Ok(());
+        }
+    };
+    let resolver_root = match locate_repo("LCOD_RESOLVER_PATH", "lcod-resolver") {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("runtime bundle test skipped (resolver repo missing): {err}");
+            return Ok(());
+        }
+    };
 
     let bundle_output = spec_root.join("dist").join("runtime");
     std::fs::create_dir_all(&bundle_output)?;
