@@ -56,6 +56,18 @@ fn catalog_generation_via_runtime_bundle() -> Result<()> {
 
     let bundle_output = spec_root.join("dist").join("runtime");
     std::fs::create_dir_all(&bundle_output)?;
+
+    let node_modules = spec_root.join("node_modules");
+    if !node_modules.is_dir() {
+        let status = Command::new("npm")
+            .args(["install", "--loglevel", "error", "--no-fund", "--no-audit"])
+            .current_dir(&spec_root)
+            .status()
+            .context("installing lcod-spec dependencies")?;
+        if !status.success() {
+            bail!("npm install failed with status {}", status);
+        }
+    }
     let status = Command::new("node")
         .arg("scripts/package-runtime.mjs")
         .arg("--output")
