@@ -31,6 +31,10 @@ The spec fixtures require the `lcod-spec` repository to be accessible. By defaul
 we look for sibling directories; override with `SPEC_REPO_PATH=/path/to/lcod-spec`
 when running locally or in CI.
 
+## Prebuilt CLI
+
+The CI publishes a `run_compose` binary artifact for Linux on every push to `main`. The artifact bundles the executable, license and usage notes so other pipelines (such as the registry refresh job) can download and run it without Node.js. See [`docs/run_compose_cli.md`](docs/run_compose_cli.md) for details.
+
 ## Shared fixtures
 
 The reusable compose fixtures live under `lcod-spec/tests/spec` and are executed
