@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 use tempfile::tempdir;
 
 fn resolver_compose_candidates() -> Vec<PathBuf> {
@@ -250,7 +251,17 @@ fn canonicalize_id(raw: &str, context: &ManifestContext) -> String {
     }
     format!("lcod://{}@{}", parts.join("/"), context.version)
 }
+fn clear_resolver_env() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        env::remove_var("SPEC_REPO_PATH");
+        env::remove_var("LCOD_RESOLVER_PATH");
+        env::remove_var("LCOD_RESOLVER_COMPONENTS_PATH");
+    });
+}
+
 fn new_registry() -> Registry {
+    clear_resolver_env();
     let registry = Registry::new();
     register_core(&registry);
     register_flow(&registry);
