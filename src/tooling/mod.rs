@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,8 @@ mod logging;
 mod registry_scope;
 mod resolver;
 mod script;
+
+use logging::log_kernel_warn;
 
 const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
 
@@ -79,7 +81,10 @@ thread_local! {
     static SPEC_REGISTER_GUARD: Cell<bool> = Cell::new(false);
 }
 
-fn run_spec_register_components(registry: &Registry, spec_root_override: Option<&str>) -> Result<Value> {
+fn run_spec_register_components(
+    registry: &Registry,
+    spec_root_override: Option<&str>,
+) -> Result<Value> {
     let skip = SPEC_REGISTER_GUARD.with(|flag| {
         if flag.get() {
             true
@@ -157,10 +162,7 @@ fn register_resolver_helpers(registry: &Registry) {
 
                 let steps = if let Some(inline) = component.get("compose") {
                     parse_compose(inline).with_context(|| {
-                        format!(
-                            "resolver/register: invalid inline compose for {}",
-                            id_raw
-                        )
+                        format!("resolver/register: invalid inline compose for {}", id_raw)
                     })?
                 } else if let Some(path_str) = component.get("composePath").and_then(Value::as_str)
                 {
@@ -185,7 +187,9 @@ fn register_resolver_helpers(registry: &Registry) {
                 let registry_clone = dynamic_registry.clone();
                 registry_clone.register(
                     id_string.clone(),
-                    move |ctx_inner: &mut Context, input_inner: Value, _meta_inner: Option<Value>| {
+                    move |ctx_inner: &mut Context,
+                          input_inner: Value,
+                          _meta_inner: Option<Value>| {
                         let steps = Arc::clone(&steps_arc);
                         run_compose(ctx_inner, &steps, input_inner)
                     },
@@ -206,16 +210,19 @@ fn register_resolver_helpers(registry: &Registry) {
     );
 
     if let Err(err) = run_spec_register_components(registry, None) {
-        eprintln!("{err}");
+        let _ = log_kernel_warn(
+            None,
+            "Failed to register resolver helpers from spec",
+            Some(json!({ "error": err.to_string() })),
+            Some(json!({ "module": "resolver-helpers" })),
+        );
     }
 
     let components_registry = registry.clone();
     registry.register(
         "lcod://tooling/resolver/register_components@0.1.0",
         move |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
-            let spec_root = input
-                .get("specRoot")
-                .and_then(Value::as_str);
+            let spec_root = input.get("specRoot").and_then(Value::as_str);
             run_spec_register_components(&components_registry, spec_root)
         },
     );
@@ -243,7 +250,6 @@ fn register_resolver_helpers(registry: &Registry) {
             );
         }
     }
-
 }
 
 #[derive(Clone)]
@@ -282,6 +288,7 @@ fn build_helper_definitions() -> Vec<ResolverHelperDef> {
             collected.extend(defs);
         }
     }
+    append_spec_fallbacks(&mut collected);
     collected
 }
 
@@ -329,6 +336,48 @@ fn gather_candidates() -> Vec<Candidate> {
     out
 }
 
+fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
+    let mut existing: HashSet<String> = collected.iter().map(|def| def.id.clone()).collect();
+    let Some(spec_root) = resolve_spec_root() else {
+        return;
+    };
+
+    let mut ensure_helper = |id: &str, rel_path: &[&str], base_path: &str| {
+        if existing.contains(id) {
+            return;
+        }
+        let mut compose_path = spec_root.clone();
+        for segment in rel_path {
+            compose_path = compose_path.join(segment);
+        }
+        if !compose_path.is_file() {
+            return;
+        }
+        collected.push(ResolverHelperDef {
+            id: id.to_string(),
+            compose_path: compose_path.clone(),
+            context: HelperContext {
+                base_path: base_path.to_string(),
+                version: "0.1.0".to_string(),
+                alias_map: HashMap::new(),
+            },
+            aliases: Vec::new(),
+        });
+        existing.insert(id.to_string());
+    };
+
+    ensure_helper(
+        "lcod://tooling/registry/catalog/generate@0.1.0",
+        &["tooling", "registry", "catalog", "compose.yaml"],
+        "tooling/registry/catalog",
+    );
+    ensure_helper(
+        "lcod://tooling/resolver/register_components@0.1.0",
+        &["tooling", "resolver", "register_components", "compose.yaml"],
+        "tooling/resolver/register_components",
+    );
+}
+
 fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDef> {
     match candidate.kind {
         CandidateKind::Root => {
@@ -351,7 +400,18 @@ fn load_workspace_definitions(root: &Path) -> Vec<ResolverHelperDef> {
     };
     let workspace_value: TomlValue = match raw.parse() {
         Ok(value) => value,
-        Err(_) => return Vec::new(),
+        Err(err) => {
+            let _ = log_kernel_warn(
+                None,
+                "Failed to parse workspace manifest",
+                Some(json!({
+                    "path": workspace_path.display().to_string(),
+                    "error": err.to_string()
+                })),
+                Some(json!({ "module": "resolver-helpers" })),
+            );
+            return Vec::new();
+        }
     };
     let workspace_table = match workspace_value
         .get("workspace")
@@ -399,7 +459,18 @@ fn load_package_definitions(
     };
     let manifest: TomlValue = match raw.parse() {
         Ok(value) => value,
-        Err(_) => return Vec::new(),
+        Err(err) => {
+            let _ = log_kernel_warn(
+                None,
+                "Failed to parse package manifest",
+                Some(json!({
+                    "path": manifest_path.display().to_string(),
+                    "error": err.to_string()
+                })),
+                Some(json!({ "module": "resolver-helpers" })),
+            );
+            return Vec::new();
+        }
     };
     let context = create_context(&manifest, workspace_aliases);
     let components = manifest
@@ -426,13 +497,26 @@ fn load_package_definitions(
                 let mut aliases = Vec::new();
                 let component_manifest_path = component_dir.join("lcp.toml");
                 if let Ok(raw) = fs::read_to_string(&component_manifest_path) {
-                    if let Ok(component_manifest) = raw.parse::<TomlValue>() {
-                        if let Some(existing_id) =
-                            component_manifest.get("id").and_then(TomlValue::as_str)
-                        {
-                            if existing_id != canonical_id {
-                                aliases.push(existing_id.to_string());
+                    match raw.parse::<TomlValue>() {
+                        Ok(component_manifest) => {
+                            if let Some(existing_id) =
+                                component_manifest.get("id").and_then(TomlValue::as_str)
+                            {
+                                if existing_id != canonical_id {
+                                    aliases.push(existing_id.to_string());
+                                }
                             }
+                        }
+                        Err(err) => {
+                            let _ = log_kernel_warn(
+                                None,
+                                "Failed to parse component manifest",
+                                Some(json!({
+                                    "path": component_manifest_path.display().to_string(),
+                                    "error": err.to_string()
+                                })),
+                                Some(json!({ "module": "resolver-helpers" })),
+                            );
                         }
                     }
                 }
@@ -522,8 +606,20 @@ fn load_legacy_component_definitions(dir: &Path) -> Vec<ResolverHelperDef> {
         let Ok(raw) = fs::read_to_string(&manifest_path) else {
             continue;
         };
-        let Ok(manifest) = raw.parse::<TomlValue>() else {
-            continue;
+        let manifest: TomlValue = match raw.parse::<TomlValue>() {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = log_kernel_warn(
+                    None,
+                    "Failed to parse legacy component manifest",
+                    Some(json!({
+                        "path": manifest_path.display().to_string(),
+                        "error": err.to_string()
+                    })),
+                    Some(json!({ "module": "resolver-helpers" })),
+                );
+                continue;
+            }
         };
         let Some(component_id) = manifest.get("id").and_then(TomlValue::as_str) else {
             continue;

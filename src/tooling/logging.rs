@@ -126,7 +126,13 @@ fn emit_log(ctx: &mut Context, input: Value, kernel_tags: bool) -> Result<Value>
         if target != LOG_CONTRACT_ID && target != KERNEL_HELPER_ID {
             let cloned = ctx.registry_clone();
             match cloned.call(ctx, &target, Value::Object(entry.clone()), None) {
-                Ok(value) => return Ok(if value.is_null() { Value::Object(entry) } else { value }),
+                Ok(value) => {
+                    return Ok(if value.is_null() {
+                        Value::Object(entry)
+                    } else {
+                        value
+                    })
+                }
                 Err(err) => {
                     let fallback = json!({
                         "level": "error",
@@ -191,4 +197,82 @@ fn log_contract_impl(ctx: &mut Context, input: Value, _meta: Option<Value>) -> R
 
 fn kernel_log_impl(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
     emit_log(ctx, input, true)
+}
+
+fn sanitize_object(input: Option<Value>) -> Option<Value> {
+    match input {
+        Some(Value::Object(map)) => Some(Value::Object(map)),
+        _ => None,
+    }
+}
+
+fn dispatch_kernel_log(
+    mut ctx_opt: Option<&mut Context>,
+    level: &str,
+    message: &str,
+    data: Option<Value>,
+    tags: Option<Value>,
+) -> Result<()> {
+    let mut entry = Map::new();
+    entry.insert("level".to_string(), Value::String(level.to_string()));
+    entry.insert("message".to_string(), Value::String(message.to_string()));
+
+    if let Some(obj) = sanitize_object(data) {
+        entry.insert("data".to_string(), obj);
+    }
+    if let Some(obj) = sanitize_object(tags) {
+        entry.insert("tags".to_string(), obj);
+    }
+
+    match ctx_opt.as_deref_mut() {
+        Some(ctx) => {
+            let _ = emit_log(ctx, Value::Object(entry), true)?;
+        }
+        None => {
+            let registry = Registry::new();
+            register_logging(&registry);
+            let mut temp_ctx = registry.context();
+            let _ = emit_log(&mut temp_ctx, Value::Object(entry), true)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn log_kernel_debug(
+    ctx: Option<&mut Context>,
+    message: &str,
+    data: Option<Value>,
+    tags: Option<Value>,
+) -> Result<()> {
+    dispatch_kernel_log(ctx, "debug", message, data, tags)
+}
+
+#[allow(dead_code)]
+pub fn log_kernel_info(
+    ctx: Option<&mut Context>,
+    message: &str,
+    data: Option<Value>,
+    tags: Option<Value>,
+) -> Result<()> {
+    dispatch_kernel_log(ctx, "info", message, data, tags)
+}
+
+pub fn log_kernel_warn(
+    ctx: Option<&mut Context>,
+    message: &str,
+    data: Option<Value>,
+    tags: Option<Value>,
+) -> Result<()> {
+    dispatch_kernel_log(ctx, "warn", message, data, tags)
+}
+
+#[allow(dead_code)]
+pub fn log_kernel_error(
+    ctx: Option<&mut Context>,
+    message: &str,
+    data: Option<Value>,
+    tags: Option<Value>,
+) -> Result<()> {
+    dispatch_kernel_log(ctx, "error", message, data, tags)
 }

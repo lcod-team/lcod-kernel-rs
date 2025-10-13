@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::compose::{parse_compose, run_compose};
 use crate::registry::{Context, Registry};
+use crate::tooling::logging::log_kernel_warn;
 
 fn parse_bindings(value: Option<&Value>) -> Option<HashMap<String, String>> {
     let map_value = value?.as_object()?;
@@ -42,7 +43,12 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
             .map(str::trim)
             .filter(|s| !s.is_empty());
         let Some(component_id) = component_id else {
-            eprintln!("tooling/registry/scope@1: skipping inline component without a valid `id`.");
+            let _ = log_kernel_warn(
+                Some(ctx),
+                "Skipping inline component without a valid id",
+                None,
+                Some(json!({ "module": "registry-scope", "reason": "missing-id" })),
+            );
             continue;
         };
 
@@ -123,16 +129,20 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
         }
 
         if obj.get("manifest").is_some() {
-            eprintln!(
-                "tooling/registry/scope@1: inline component \"{}\" with manifest is not yet supported; skipping.",
-                component_id
+            let _ = log_kernel_warn(
+                Some(ctx),
+                "Inline component manifest not supported",
+                Some(json!({ "componentId": component_id })),
+                Some(json!({ "module": "registry-scope", "reason": "manifest" })),
             );
             continue;
         }
 
-        eprintln!(
-            "tooling/registry/scope@1: inline component \"{}\" missing a supported definition; skipping.",
-            component_id
+        let _ = log_kernel_warn(
+            Some(ctx),
+            "Inline component missing a supported definition",
+            Some(json!({ "componentId": component_id })),
+            Some(json!({ "module": "registry-scope", "reason": "unsupported" })),
         );
     }
 

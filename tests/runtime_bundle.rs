@@ -1,12 +1,12 @@
 use std::env;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context as _, Result};
+use lcod_kernel_rs::tooling::register_resolver_axioms;
 use lcod_kernel_rs::{
     register_core, register_flow, register_tooling, Context as KernelContext, Registry,
 };
-use lcod_kernel_rs::tooling::register_resolver_axioms;
 use serde_json::{json, Value};
 
 struct EnvGuard {
@@ -74,10 +74,7 @@ fn catalog_generation_via_runtime_bundle() -> Result<()> {
 
     let runtime_root = bundle_output.join("lcod-runtime-test");
     if !runtime_root.is_dir() {
-        bail!(
-            "runtime bundle missing at {}",
-            runtime_root.display()
-        );
+        bail!("runtime bundle missing at {}", runtime_root.display());
     }
 
     let runtime_str = runtime_root

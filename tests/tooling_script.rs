@@ -1,8 +1,8 @@
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
 use lcod_kernel_rs::registry::{Context, Registry, SlotExecutor};
 use lcod_kernel_rs::tooling::register_tooling;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 struct DummySlot;
 
@@ -230,23 +230,17 @@ fn script_console_routes_to_logging_contract() {
 
     let captured = captured.lock().expect("capture guard");
     assert_eq!(captured.len(), 2);
-    let first = captured[0]
-        .as_object()
-        .expect("first log payload");
+    let first = captured[0].as_object().expect("first log payload");
     assert_eq!(first.get("level"), Some(&Value::String("info".into())));
     assert_eq!(
         first.get("message"),
         Some(&Value::String("from script".into()))
     );
-    let second = captured[1]
-        .as_object()
-        .expect("second log payload");
+    let second = captured[1].as_object().expect("second log payload");
     assert_eq!(second.get("level"), Some(&Value::String("error".into())));
-    assert!(
-        second
-            .get("message")
-            .and_then(Value::as_str)
-            .map(|msg| msg.contains("oops"))
-            .unwrap_or(false)
-    );
+    assert!(second
+        .get("message")
+        .and_then(Value::as_str)
+        .map(|msg| msg.contains("oops"))
+        .unwrap_or(false));
 }
