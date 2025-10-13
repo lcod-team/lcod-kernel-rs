@@ -29,7 +29,31 @@ pub fn register_tooling(registry: &Registry) {
     register_resolver_helpers(registry);
 }
 
+fn runtime_root() -> Option<PathBuf> {
+    if let Ok(home) = env::var("LCOD_HOME") {
+        let candidate = PathBuf::from(home);
+        if candidate.join("manifest.json").is_file() && candidate.join("tooling").is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn runtime_resolver_root() -> Option<PathBuf> {
+    runtime_root().and_then(|root| {
+        let resolver = root.join("resolver");
+        if resolver.join("workspace.lcp.toml").is_file() {
+            Some(resolver)
+        } else {
+            None
+        }
+    })
+}
+
 fn resolve_spec_root() -> Option<PathBuf> {
+    if let Some(root) = runtime_root() {
+        return Some(root);
+    }
     if let Ok(env_path) = env::var("SPEC_REPO_PATH") {
         let candidate = PathBuf::from(env_path);
         if candidate.is_dir() {
@@ -236,11 +260,14 @@ struct ResolverHelperDef {
     aliases: Vec<String>,
 }
 
+#[derive(Debug)]
 enum CandidateKind {
     Root,
     Components,
+    Legacy,
 }
 
+#[derive(Debug)]
 struct Candidate {
     kind: CandidateKind,
     path: PathBuf,
@@ -260,6 +287,28 @@ fn build_helper_definitions() -> Vec<ResolverHelperDef> {
 
 fn gather_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
+    if let Some(runtime_resolver) = runtime_resolver_root() {
+        out.push(Candidate {
+            kind: CandidateKind::Root,
+            path: runtime_resolver,
+        });
+    }
+    if let Some(runtime) = runtime_root() {
+        let tooling_resolver = runtime.join("tooling").join("resolver");
+        if tooling_resolver.is_dir() {
+            out.push(Candidate {
+                kind: CandidateKind::Legacy,
+                path: tooling_resolver,
+            });
+        }
+        let tooling_registry = runtime.join("tooling").join("registry");
+        if tooling_registry.is_dir() {
+            out.push(Candidate {
+                kind: CandidateKind::Legacy,
+                path: tooling_registry,
+            });
+        }
+    }
     if let Ok(path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
         out.push(Candidate {
             kind: CandidateKind::Components,
@@ -291,6 +340,7 @@ fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDe
             }
         }
         CandidateKind::Components => load_legacy_component_definitions(&candidate.path),
+        CandidateKind::Legacy => load_legacy_component_definitions(&candidate.path),
     }
 }
 

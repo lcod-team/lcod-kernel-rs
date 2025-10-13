@@ -38,6 +38,9 @@ Next:
 - [ ] Publish a crate/binary `lcod-kernel-rs-cli`.
 - [ ] Implement `--assemble/--ship/--build` (aligned with the spec packaging roadmap).
 - [x] Keep `tooling/compose/normalize@1` aligned with the spec.
+- [x] Integrate the shared runtime bundle (`LCOD_HOME`): download, checksum/signature verification, decompression.
+- [x] Resolve composes/axioms from the bundle by default (fallback to `SPEC_REPO_PATH` for developers).
+- [x] Add an integration test running `tooling/registry/catalog/generate@*` via the bundle to ensure parity with the Node kernel.
 
 ## M6 — Service demo
 - [x] HTTP demo (`env/http_host@0.1.0`, `project/http_app@0.1.0`): parity with Node plus tests.
