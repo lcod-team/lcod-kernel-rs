@@ -1,0 +1,49 @@
+name: Release Binary
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "run-compose-v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          profile: minimal
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --locked --release --bin run_compose
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          cp target/release/run_compose bundle/run-compose
+          strip bundle/run-compose || true
+          cp README.md bundle/README.md
+          cp LICENSE bundle/
+          mkdir -p bundle/docs
+          cp docs/run_compose_cli.md bundle/docs/
+          tar -czf run-compose-linux-x86_64.tar.gz -C bundle .
+          sha256sum run-compose-linux-x86_64.tar.gz > run-compose-linux-x86_64.sha256
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            run-compose-linux-x86_64.tar.gz
+            run-compose-linux-x86_64.sha256

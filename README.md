@@ -33,7 +33,7 @@ when running locally or in CI.
 
 ## Prebuilt CLI
 
-The CI publishes a `run_compose` binary artifact for Linux on every push to `main`. The artifact bundles the executable, license and usage notes so other pipelines (such as the registry refresh job) can download and run it without Node.js. See [`docs/run_compose_cli.md`](docs/run_compose_cli.md) for details.
+The CI publishes a `run_compose` binary artefact for Linux on every push to `main`. Tagging the repository with `v*.*.*` (or `run-compose-v*.*.*`) now creates a GitHub Release containing the same tarball plus a checksum, so downstream jobs can pin exact versions. See [`docs/run_compose_cli.md`](docs/run_compose_cli.md) for details.
 
 ## Shared fixtures
 

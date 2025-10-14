@@ -48,6 +48,11 @@ the same command instead of running the Node.js tooling.
 If the binary runs next to the spec/resolver repositories or the runtime bundle,
 no additional setup is needed.
 
+## Distribution
+
+- The “Build Binary” workflow packages a Linux tarball (`run-compose-linux-x86_64.tar.gz`) as a GitHub Actions artefact on every push to `main`.
+- Tagging the repository with `v*.*.*` (or `run-compose-v*.*.*`) triggers the “Release Binary” workflow, which publishes the tarball alongside a SHA-256 checksum on the corresponding GitHub Release. Downstream pipelines can download these artefacts directly instead of depending on the build artefact.
+
 ## Exit codes
 
 - `0` – composition succeeded.
