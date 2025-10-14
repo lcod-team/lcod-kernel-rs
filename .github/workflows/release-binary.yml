@@ -15,6 +15,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Determine runtime refs
+        id: runtime
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF_NAME}"
+          spec_ref="$ref"
+          bundle_label="$ref"
+          if [[ "$ref" == run-compose-* ]]; then
+            spec_ref="${ref#run-compose-}"
+            bundle_label="$spec_ref"
+          fi
+          bundle_label="${bundle_label//\//-}"
+          echo "spec_ref=$spec_ref" >> "$GITHUB_OUTPUT"
+          echo "bundle_label=$bundle_label" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -28,17 +43,90 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --bin run_compose
 
+      - name: Checkout lcod-spec (tag or branch)
+        id: checkout_spec_tag
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: lcod-team/lcod-spec
+          ref: ${{ steps.runtime.outputs.spec_ref }}
+          path: lcod-spec
+
+      - name: Checkout lcod-spec (main fallback)
+        if: steps.checkout_spec_tag.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: lcod-team/lcod-spec
+          ref: main
+          path: lcod-spec
+
+      - name: Checkout lcod-resolver (tag or branch)
+        id: checkout_resolver_tag
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: lcod-team/lcod-resolver
+          ref: ${{ steps.runtime.outputs.spec_ref }}
+          path: lcod-resolver
+
+      - name: Checkout lcod-resolver (main fallback)
+        if: steps.checkout_resolver_tag.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: lcod-team/lcod-resolver
+          ref: main
+          path: lcod-resolver
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: lcod-spec/package-lock.json
+
+      - name: Install spec dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: lcod-spec
+
+      - name: Export resolver runtime snapshot
+        run: node scripts/export-runtime.mjs
+        working-directory: lcod-resolver
+
+      - name: Build runtime bundle
+        run: |
+          node scripts/package-runtime.mjs \
+            --output dist/runtime \
+            --label "${{ steps.runtime.outputs.bundle_label }}" \
+            --resolver "$GITHUB_WORKSPACE/lcod-resolver"
+        working-directory: lcod-spec
+
       - name: Package artifact
         run: |
           set -euo pipefail
-          mkdir -p bundle
-          cp target/release/run_compose bundle/run-compose
-          strip bundle/run-compose || true
-          cp README.md bundle/README.md
-          cp LICENSE bundle/
-          mkdir -p bundle/docs
-          cp docs/run_compose_cli.md bundle/docs/
-          tar -czf run-compose-linux-x86_64.tar.gz -C bundle .
+          BUNDLE_DIR="$GITHUB_WORKSPACE/bundle"
+          RUNTIME_LABEL="${{ steps.runtime.outputs.bundle_label }}"
+          RUNTIME_TARBALL="$GITHUB_WORKSPACE/lcod-spec/dist/runtime/lcod-runtime-${RUNTIME_LABEL}.tar.gz"
+          RUNTIME_DIR_NAME="lcod-runtime-${RUNTIME_LABEL}"
+          if [ ! -f "$RUNTIME_TARBALL" ]; then
+            echo "::error::Runtime bundle not found at $RUNTIME_TARBALL"
+            exit 1
+          fi
+          rm -rf "$BUNDLE_DIR"
+          mkdir -p "$BUNDLE_DIR/docs"
+          cp target/release/run_compose "$BUNDLE_DIR/run-compose"
+          strip "$BUNDLE_DIR/run-compose" || true
+          cp README.md "$BUNDLE_DIR/README.md"
+          cp LICENSE "$BUNDLE_DIR/"
+          cp docs/run_compose_cli.md "$BUNDLE_DIR/docs/"
+          tar -xzf "$RUNTIME_TARBALL" -C "$BUNDLE_DIR"
+          if [ ! -d "$BUNDLE_DIR/$RUNTIME_DIR_NAME" ]; then
+            echo "::error::Runtime directory $RUNTIME_DIR_NAME missing inside bundle"
+            ls -al "$BUNDLE_DIR"
+            exit 1
+          fi
+          rm -rf "$BUNDLE_DIR/runtime"
+          mv "$BUNDLE_DIR/$RUNTIME_DIR_NAME" "$BUNDLE_DIR/runtime"
+          tar -czf run-compose-linux-x86_64.tar.gz -C "$BUNDLE_DIR" .
           sha256sum run-compose-linux-x86_64.tar.gz > run-compose-linux-x86_64.sha256
 
       - name: Create GitHub release

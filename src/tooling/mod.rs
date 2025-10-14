@@ -32,13 +32,52 @@ pub fn register_tooling(registry: &Registry) {
 }
 
 fn runtime_root() -> Option<PathBuf> {
-    if let Ok(home) = env::var("LCOD_HOME") {
-        let candidate = PathBuf::from(home);
-        if candidate.join("manifest.json").is_file() && candidate.join("tooling").is_dir() {
-            return Some(candidate);
+    runtime_root_from_env().or_else(runtime_root_from_executable)
+}
+
+fn runtime_root_from_env() -> Option<PathBuf> {
+    let home = env::var("LCOD_HOME").ok()?;
+    let candidate = PathBuf::from(home);
+    if is_runtime_dir(&candidate) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn runtime_root_from_executable() -> Option<PathBuf> {
+    let exe_path = env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+
+    let candidate = exe_dir.join("runtime");
+    if is_runtime_dir(&candidate) {
+        return Some(candidate);
+    }
+
+    if let Ok(entries) = fs::read_dir(exe_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with("lcod-runtime-") {
+                continue;
+            }
+            if is_runtime_dir(&path) {
+                return Some(path);
+            }
         }
     }
+
     None
+}
+
+fn is_runtime_dir(path: &Path) -> bool {
+    path.join("manifest.json").is_file() && path.join("tooling").is_dir()
 }
 
 fn runtime_resolver_root() -> Option<PathBuf> {

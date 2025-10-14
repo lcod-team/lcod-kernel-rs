@@ -39,19 +39,22 @@ the same command instead of running the Node.js tooling.
 
 ## Environment
 
-- `SPEC_REPO_PATH` – path to the `lcod-spec` checkout or runtime bundle.
-- `LCOD_RESOLVER_PATH` – path to the resolver workspace (required for resolver
-  helpers).
-- `LCOD_HOME` – optional path to a packaged runtime bundle (overrides the two
-  variables above).
+- `SPEC_REPO_PATH` – path to the `lcod-spec` checkout or runtime bundle (useful
+  for local development).
+- `LCOD_RESOLVER_PATH` – path to the resolver workspace (only required when the
+  runtime bundle is not available).
+- `LCOD_HOME` – optional path to a packaged runtime bundle; when unset the CLI
+  looks for a `runtime/` directory next to the executable (this is how the
+  published tarball is structured) and falls back to the two variables above.
 
-If the binary runs next to the spec/resolver repositories or the runtime bundle,
-no additional setup is needed.
+When you extract a release archive, the runtime bundle ships alongside the
+binary, so no additional setup is required. For development checkouts you can
+still point the environment variables at local repositories.
 
 ## Distribution
 
 - The “Build Binary” workflow packages a Linux tarball (`run-compose-linux-x86_64.tar.gz`) as a GitHub Actions artefact on every push to `main`.
-- Tagging the repository with `v*.*.*` (or `run-compose-v*.*.*`) triggers the “Release Binary” workflow, which publishes the tarball alongside a SHA-256 checksum on the corresponding GitHub Release. Downstream pipelines can download these artefacts directly instead of depending on the build artefact.
+- Tagging the repository with `v*.*.*` (or `run-compose-v*.*.*`) triggers the “Release Binary” workflow, which now embeds the runtime bundle under `runtime/` and publishes the archive alongside a SHA-256 checksum. Downstream pipelines can download this artefact and run `run-compose` without cloning `lcod-spec`.
 
 ## Exit codes
 
