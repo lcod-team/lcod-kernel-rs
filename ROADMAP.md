@@ -43,6 +43,7 @@ Next:
 - [x] Add an integration test running `tooling/registry/catalog/generate@*` via the bundle to ensure parity with the Node kernel.
 - [x] Release tarball embeds the runtime bundle so `run-compose` works standalone (refs #16).
 - [ ] Build the autonomous `lcod-run` CLI (embedded bundle, resolver, caching UX) — coordinate with the spec draft `docs/lcod-run-cli.md`.
+  - [ ] Prepare release workflow for cross-platform binaries (bundle embed + artefacts).
 
 ## M6 — Service demo
 - [x] HTTP demo (`env/http_host@0.1.0`, `project/http_app@0.1.0`): parity with Node plus tests.

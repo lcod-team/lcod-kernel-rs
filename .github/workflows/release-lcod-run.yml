@@ -1,0 +1,84 @@
+name: Release lcod-run
+
+on:
+  push:
+    tags:
+      - "lcod-run-v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: lcod-run-linux-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: lcod-run-macos-x86_64
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: lcod-run-windows-x86_64
+            archive: zip
+    env:
+      RUSTFLAGS: "-C target-cpu=native"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+
+      - name: Checkout spec
+        uses: actions/checkout@v4
+        with:
+          repository: lcod-team/lcod-spec
+          path: lcod-spec
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          profile: minimal
+          target: ${{ matrix.target }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build runtime bundle
+        run: |
+          set -euo pipefail
+          cd lcod-spec
+          node scripts/package-runtime.mjs --output dist/runtime --label "${GITHUB_SHA::7}"
+
+      - name: Build lcod-run
+        run: |
+          set -euo pipefail
+          export LCOD_EMBED_RUNTIME="$PWD/lcod-spec/dist/runtime/lcod-runtime-${GITHUB_SHA::7}.tar.gz"
+          cargo build --release --bin lcod_run --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            cp target/${{ matrix.target }}/release/lcod_run dist/lcod-run
+            strip dist/lcod-run || true
+            tar -czf ${{ matrix.artifact }}.tar.gz -C dist lcod-run
+          else
+            cp target/${{ matrix.target }}/release/lcod_run.exe dist/lcod-run.exe
+            powershell -Command "Compress-Archive -Path dist/lcod-run.exe -DestinationPath ${{ matrix.artifact }}.zip"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.zip
+        if-no-files-found: ignore
