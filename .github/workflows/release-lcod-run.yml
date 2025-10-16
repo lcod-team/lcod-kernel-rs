@@ -38,6 +38,11 @@ jobs:
           repository: lcod-team/lcod-spec
           path: lcod-spec
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -50,18 +55,22 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build runtime bundle
+        shell: bash
         run: |
           set -euo pipefail
           cd lcod-spec
           node scripts/package-runtime.mjs --output dist/runtime --label "${GITHUB_SHA::7}"
 
       - name: Build lcod-run
+        shell: bash
         run: |
           set -euo pipefail
           export LCOD_EMBED_RUNTIME="$PWD/lcod-spec/dist/runtime/lcod-runtime-${GITHUB_SHA::7}.tar.gz"
           cargo build --release --bin lcod_run --target ${{ matrix.target }}
 
       - name: Prepare artifact
+        id: package
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -69,15 +78,15 @@ jobs:
             cp target/${{ matrix.target }}/release/lcod_run dist/lcod-run
             strip dist/lcod-run || true
             tar -czf ${{ matrix.artifact }}.tar.gz -C dist lcod-run
+            echo "path=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_OUTPUT"
           else
             cp target/${{ matrix.target }}/release/lcod_run.exe dist/lcod-run.exe
-            powershell -Command "Compress-Archive -Path dist/lcod-run.exe -DestinationPath ${{ matrix.artifact }}.zip"
+            powershell.exe -Command "Compress-Archive -Path dist/lcod-run.exe -DestinationPath ${{ matrix.artifact }}.zip"
+            echo "path=${{ matrix.artifact }}.zip" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.zip
+          path: ${{ steps.package.outputs.path }}
