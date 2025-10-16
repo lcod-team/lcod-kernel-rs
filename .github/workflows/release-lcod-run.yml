@@ -43,6 +43,10 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install spec dependencies
+        working-directory: lcod-spec
+        run: npm ci
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
