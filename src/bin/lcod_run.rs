@@ -1,10 +1,13 @@
+use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser};
 use dirs::home_dir;
+use flate2::read::GzDecoder;
+use hex;
 use lcod_kernel_rs::compose::{parse_compose, run_compose, Step};
 use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
@@ -13,7 +16,16 @@ use lcod_kernel_rs::registry::Registry;
 use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
 use serde_json::{json, Value};
 use serde_yaml;
+use sha2::{Digest, Sha256};
+use tar::Archive;
 use toml::Value as TomlValue;
+
+mod embedded_runtime {
+    #[allow(dead_code)]
+    pub fn bundle_bytes() -> Option<&'static [u8]> {
+        None
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "lcod-run")]
@@ -53,6 +65,8 @@ fn main() {
 
 fn run() -> Result<()> {
     let opts = CliOptions::parse();
+
+    ensure_runtime_home()?;
 
     let compose_path = canonicalise_path(&opts.compose)
         .with_context(|| format!("Unable to read compose path {}", opts.compose.display()))?;
@@ -170,6 +184,95 @@ fn setup_registry() -> Registry {
     register_tooling(&registry);
     register_resolver_axioms(&registry);
     registry
+}
+
+fn ensure_runtime_home() -> Result<()> {
+    if let Ok(existing) = env::var("LCOD_HOME") {
+        let path = PathBuf::from(&existing);
+        if runtime_manifest_present(&path) {
+            return Ok(());
+        }
+    }
+
+    if let Some(bytes) = embedded_runtime::bundle_bytes() {
+        let install_path = install_embedded_runtime(bytes)?;
+        env::set_var("LCOD_HOME", &install_path);
+        return Ok(());
+    }
+
+    set_spec_repo_hint();
+    Ok(())
+}
+
+fn runtime_manifest_present(path: &Path) -> bool {
+    path.join("manifest.json").is_file()
+}
+
+fn install_embedded_runtime(bytes: &[u8]) -> Result<PathBuf> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let hash = hasher.finalize();
+    let bundle_id = format!("embedded-{}", hex::encode(hash));
+
+    let home = home_dir().ok_or_else(|| anyhow!("Unable to locate user home directory"))?;
+    let base = home.join(".lcod").join("runtime");
+    let target = base.join(&bundle_id);
+    if runtime_manifest_present(&target) {
+        return Ok(target);
+    }
+
+    fs::create_dir_all(&base).with_context(|| {
+        format!(
+            "Unable to create runtime parent directory {}",
+            base.display()
+        )
+    })?;
+
+    if target.exists() {
+        fs::remove_dir_all(&target)
+            .with_context(|| format!("Unable to clean runtime directory {}", target.display()))?;
+    }
+
+    fs::create_dir_all(&target)
+        .with_context(|| format!("Unable to create runtime directory {}", target.display()))?;
+
+    let cursor = Cursor::new(bytes);
+    let decoder = GzDecoder::new(cursor);
+    let mut archive = Archive::new(decoder);
+    if let Err(err) = archive.unpack(&target) {
+        let _ = fs::remove_dir_all(&target);
+        return Err(anyhow!("Failed to unpack embedded runtime bundle: {err}"));
+    }
+
+    Ok(target)
+}
+
+fn set_spec_repo_hint() {
+    if env::var("SPEC_REPO_PATH").is_ok() {
+        return;
+    }
+    if let Some(path) = candidate_spec_paths()
+        .into_iter()
+        .find(|candidate| candidate.is_dir())
+    {
+        env::set_var("SPEC_REPO_PATH", &path);
+    }
+}
+
+fn candidate_spec_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            candidates.push(dir.join("..").join("lcod-spec"));
+            candidates.push(dir.join("../..").join("lcod-spec"));
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("lcod-spec"));
+        candidates.push(cwd.join("../lcod-spec"));
+        candidates.push(cwd.join("../../lcod-spec"));
+    }
+    candidates
 }
 
 fn load_compose(path: &Path) -> Result<Vec<Step>> {
