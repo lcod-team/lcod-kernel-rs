@@ -23,10 +23,7 @@ use toml::Value as TomlValue;
 use url::Url;
 
 mod embedded_runtime {
-    #[allow(dead_code)]
-    pub fn bundle_bytes() -> Option<&'static [u8]> {
-        None
-    }
+    include!(concat!(env!("OUT_DIR"), "/embedded_runtime.rs"));
 }
 
 struct ComposeHandle {
