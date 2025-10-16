@@ -265,10 +265,7 @@ fn register_resolver_helpers(registry: &Registry) {
                 .get("specRoot")
                 .and_then(Value::as_str)
                 .map(|s| s.to_string());
-            run_spec_register_components(
-                &cloned_registry,
-                spec_root_override.as_deref(),
-            )
+            run_spec_register_components(&cloned_registry, spec_root_override.as_deref())
         },
     );
 

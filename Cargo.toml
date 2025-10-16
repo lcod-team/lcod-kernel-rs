@@ -30,6 +30,8 @@ url = "=2.4.1"
 tempfile = "3"
 tiny_http = "0.12"
 ctrlc = "3"
+clap = { version = "4.5", features = ["derive"] }
+dirs = "5"
 
 [dev-dependencies]
 ureq = "2"

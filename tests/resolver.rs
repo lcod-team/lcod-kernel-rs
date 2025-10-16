@@ -358,10 +358,7 @@ fn resolver_compose_handles_local_path_dependency() {
         dep_entry["id"].as_str().unwrap(),
         "lcod://example/dep@0.1.0"
     );
-    assert_eq!(
-        dep_entry["source"]["type"].as_str().unwrap(),
-        "registry"
-    );
+    assert_eq!(dep_entry["source"]["type"].as_str().unwrap(), "registry");
     assert_eq!(
         dep_entry["source"]["reference"].as_str().unwrap(),
         "lcod://example/dep@0.1.0"
@@ -448,10 +445,7 @@ fn resolver_compose_handles_git_dependency() {
     let lock_doc: toml::Value = lock_raw.parse().unwrap();
     let component = &lock_doc["components"].as_array().unwrap()[0];
     let dep_entry = component["dependencies"].as_array().unwrap()[0].clone();
-    assert_eq!(
-        dep_entry["source"]["type"].as_str().unwrap(),
-        "registry"
-    );
+    assert_eq!(dep_entry["source"]["type"].as_str().unwrap(), "registry");
     assert_eq!(
         dep_entry["source"]["reference"].as_str().unwrap(),
         "lcod://example/git@0.1.0"
@@ -525,16 +519,16 @@ fn load_sources_resolver_fixture_catalogues() {
     let mut fixture_core_found = false;
     let mut fixture_extra_found = false;
     for entry in &registry_sources {
-        let Some(id) = entry.get("id").and_then(JsonValue::as_str) else { continue };
+        let Some(id) = entry.get("id").and_then(JsonValue::as_str) else {
+            continue;
+        };
         match id {
             "fixture/core" => {
                 fixture_core_found = true;
                 assert_eq!(entry.get("priority").and_then(JsonValue::as_i64), Some(50));
                 let lines = entry.get("lines").and_then(JsonValue::as_array).unwrap();
                 assert!(lines.iter().any(|line| {
-                    line.get("id")
-                        .and_then(JsonValue::as_str)
-                        == Some("lcod://fixture/core")
+                    line.get("id").and_then(JsonValue::as_str) == Some("lcod://fixture/core")
                 }));
             }
             "fixture/extra" => {
@@ -542,9 +536,7 @@ fn load_sources_resolver_fixture_catalogues() {
                 assert_eq!(entry.get("priority").and_then(JsonValue::as_i64), Some(75));
                 let lines = entry.get("lines").and_then(JsonValue::as_array).unwrap();
                 assert!(lines.iter().any(|line| {
-                    line.get("id")
-                        .and_then(JsonValue::as_str)
-                        == Some("lcod://fixture/extra")
+                    line.get("id").and_then(JsonValue::as_str) == Some("lcod://fixture/extra")
                 }));
             }
             _ => {}
@@ -559,7 +551,10 @@ fn load_sources_resolver_fixture_catalogues() {
         .and_then(JsonValue::as_array)
         .cloned()
         .unwrap_or_default();
-    assert!(warnings.is_empty(), "load-sources emitted warnings: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "load-sources emitted warnings: {warnings:?}"
+    );
     let returned_sources_path = output
         .get("sourcesPath")
         .and_then(JsonValue::as_str)
