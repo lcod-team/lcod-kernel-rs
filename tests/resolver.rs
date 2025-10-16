@@ -467,6 +467,7 @@ fn load_sources_resolver_fixture_catalogues() {
         );
         return;
     };
+    let spec_root_string = spec_root.to_string_lossy().to_string();
     let fixture_root = spec_root
         .join("tests")
         .join("spec")
@@ -485,6 +486,14 @@ fn load_sources_resolver_fixture_catalogues() {
     let sources_path = fixture_root.join("sources.json");
 
     let registry = new_registry();
+    {
+        let mut init_ctx = registry.context();
+        let _ = init_ctx.call(
+            "lcod://tooling/resolver/register_components@0.1.0",
+            json!({ "specRoot": spec_root_string }),
+            None,
+        );
+    }
     let mut ctx = registry.context();
     let input = json!({
         "projectPath": fixture_root.to_string_lossy(),
