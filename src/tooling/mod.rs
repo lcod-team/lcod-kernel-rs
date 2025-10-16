@@ -257,6 +257,21 @@ fn register_resolver_helpers(registry: &Registry) {
         );
     }
 
+    let cloned_registry = registry.clone();
+    registry.register(
+        "lcod://tooling/resolver/register_components@0.1.0",
+        move |_ctx: &mut Context, input: Value, _meta: Option<Value>| {
+            let spec_root_override = input
+                .get("specRoot")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            run_spec_register_components(
+                &cloned_registry,
+                spec_root_override.as_deref(),
+            )
+        },
+    );
+
     let components_registry = registry.clone();
     registry.register(
         "lcod://tooling/resolver/register_components@0.1.0",

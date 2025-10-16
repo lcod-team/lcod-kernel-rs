@@ -11,6 +11,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use tempfile::tempdir;
 
+fn locate_spec_repo() -> Option<PathBuf> {
+    if let Ok(env_path) = env::var("SPEC_REPO_PATH") {
+        let candidate = PathBuf::from(&env_path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        manifest_dir.join("../lcod-spec"),
+        manifest_dir.join("../../lcod-spec"),
+        manifest_dir.join("../../../lcod-spec"),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn resolver_compose_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(path) = env::var("LCOD_RESOLVER_COMPOSE") {
@@ -337,7 +358,14 @@ fn resolver_compose_handles_local_path_dependency() {
         dep_entry["id"].as_str().unwrap(),
         "lcod://example/dep@0.1.0"
     );
-    assert_eq!(dep_entry["source"]["type"].as_str().unwrap(), "path");
+    assert_eq!(
+        dep_entry["source"]["type"].as_str().unwrap(),
+        "registry"
+    );
+    assert_eq!(
+        dep_entry["source"]["reference"].as_str().unwrap(),
+        "lcod://example/dep@0.1.0"
+    );
 }
 
 #[test]
@@ -420,6 +448,115 @@ fn resolver_compose_handles_git_dependency() {
     let lock_doc: toml::Value = lock_raw.parse().unwrap();
     let component = &lock_doc["components"].as_array().unwrap()[0];
     let dep_entry = component["dependencies"].as_array().unwrap()[0].clone();
-    assert_eq!(dep_entry["source"]["type"].as_str().unwrap(), "git");
+    assert_eq!(
+        dep_entry["source"]["type"].as_str().unwrap(),
+        "registry"
+    );
+    assert_eq!(
+        dep_entry["source"]["reference"].as_str().unwrap(),
+        "lcod://example/git@0.1.0"
+    );
     std::env::remove_var("LCOD_CACHE_DIR");
+}
+
+#[test]
+fn load_sources_resolver_fixture_catalogues() {
+    let Some(spec_root) = locate_spec_repo() else {
+        eprintln!(
+            "SPEC_REPO_PATH missing and lc0d-spec checkout not found; skipping load_sources_resolver_fixture_catalogues"
+        );
+        return;
+    };
+    let fixture_root = spec_root
+        .join("tests")
+        .join("spec")
+        .join("resolver_sources")
+        .join("fixtures")
+        .join("basic");
+    if !fixture_root.exists() {
+        eprintln!(
+            "resolver_sources fixtures missing at {}; skipping",
+            fixture_root.display()
+        );
+        return;
+    }
+
+    let cache_dir = tempdir().expect("create cache dir");
+    let sources_path = fixture_root.join("sources.json");
+
+    let registry = new_registry();
+    let mut ctx = registry.context();
+    let input = json!({
+        "projectPath": fixture_root.to_string_lossy(),
+        "cacheDir": cache_dir.path().to_string_lossy(),
+        "sourcesPath": sources_path.to_string_lossy(),
+        "resolverConfig": {}
+    });
+
+    let output = ctx
+        .call(
+            "lcod://tooling/resolver/internal/load-sources@0.1.0",
+            input,
+            None,
+        )
+        .expect("load-sources call");
+
+    let registry_sources = output
+        .get("registrySources")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        !registry_sources.is_empty(),
+        "load-sources returned no registry sources: {}",
+        serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
+    );
+
+    let mut fixture_core_found = false;
+    let mut fixture_extra_found = false;
+    for entry in &registry_sources {
+        let Some(id) = entry.get("id").and_then(JsonValue::as_str) else { continue };
+        match id {
+            "fixture/core" => {
+                fixture_core_found = true;
+                assert_eq!(entry.get("priority").and_then(JsonValue::as_i64), Some(50));
+                let lines = entry.get("lines").and_then(JsonValue::as_array).unwrap();
+                assert!(lines.iter().any(|line| {
+                    line.get("id")
+                        .and_then(JsonValue::as_str)
+                        == Some("lcod://fixture/core")
+                }));
+            }
+            "fixture/extra" => {
+                fixture_extra_found = true;
+                assert_eq!(entry.get("priority").and_then(JsonValue::as_i64), Some(75));
+                let lines = entry.get("lines").and_then(JsonValue::as_array).unwrap();
+                assert!(lines.iter().any(|line| {
+                    line.get("id")
+                        .and_then(JsonValue::as_str)
+                        == Some("lcod://fixture/extra")
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    assert!(fixture_core_found, "fixture/core catalogue missing");
+    assert!(fixture_extra_found, "fixture/extra catalogue missing");
+
+    let warnings = output
+        .get("warnings")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(warnings.is_empty(), "load-sources emitted warnings: {warnings:?}");
+    let returned_sources_path = output
+        .get("sourcesPath")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    assert!(
+        returned_sources_path.ends_with("fixtures/basic/sources.json"),
+        "unexpected sourcesPath: {returned_sources_path}"
+    );
 }

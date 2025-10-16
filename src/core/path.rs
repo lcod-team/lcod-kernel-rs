@@ -39,6 +39,13 @@ fn push_segment(path: &mut PathBuf, segment: &str) {
     if segment.is_empty() {
         return;
     }
+    if segment == "." {
+        return;
+    }
+    if segment == ".." {
+        path.pop();
+        return;
+    }
     if Path::new(segment).is_absolute() {
         *path = PathBuf::from(segment);
     } else {
