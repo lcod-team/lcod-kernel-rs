@@ -23,24 +23,8 @@ jobs:
         with:
           repository: lcod-team/lcod-resolver
           path: lcod-resolver
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      - name: Cache cargo target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
