@@ -81,4 +81,3 @@ jobs:
           path: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.zip
-        if-no-files-found: ignore
