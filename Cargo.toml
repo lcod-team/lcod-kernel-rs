@@ -34,6 +34,7 @@ clap = { version = "4.5", features = ["derive"] }
 dirs = "5"
 flate2 = "1"
 tar = "0.4"
+ureq = { version = "2", features = ["gzip", "json"] }
 
 [dev-dependencies]
 ureq = "2"

@@ -18,12 +18,43 @@ use serde_json::{json, Value};
 use serde_yaml;
 use sha2::{Digest, Sha256};
 use tar::Archive;
+use tempfile::{Builder as TempDirBuilder, TempDir};
 use toml::Value as TomlValue;
+use url::Url;
 
 mod embedded_runtime {
     #[allow(dead_code)]
     pub fn bundle_bytes() -> Option<&'static [u8]> {
         None
+    }
+}
+
+struct ComposeHandle {
+    path: PathBuf,
+    temp_dir: Option<TempDir>,
+}
+
+impl ComposeHandle {
+    fn local(path: PathBuf) -> Self {
+        Self {
+            path,
+            temp_dir: None,
+        }
+    }
+
+    fn temporary(path: PathBuf, temp_dir: TempDir) -> Self {
+        Self {
+            path,
+            temp_dir: Some(temp_dir),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_temporary(&self) -> bool {
+        self.temp_dir.is_some()
     }
 }
 
@@ -68,30 +99,22 @@ fn run() -> Result<()> {
 
     ensure_runtime_home()?;
 
-    let compose_path = canonicalise_path(&opts.compose)
-        .with_context(|| format!("Unable to read compose path {}", opts.compose.display()))?;
-    if !compose_path.is_file() {
-        return Err(anyhow!(
-            "Compose path {} is not a regular file",
-            compose_path.display()
-        ));
-    }
+    let compose_holder = acquire_compose(&opts.compose)?;
+    let compose_path = compose_holder.path();
 
     let compose_dir = compose_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    if opts.resolve {
-        eprintln!(
-            "warning: --resolve not yet implemented, expecting lcp.lock to be present or unused"
-        );
-    }
-
-    let lock_path = opts
-        .lock_path
-        .clone()
-        .unwrap_or_else(|| compose_dir.join("lcp.lock"));
+    let default_lock = if compose_holder.is_temporary() {
+        env::current_dir()
+            .context("Unable to determine current directory for lockfile")?
+            .join("lcp.lock")
+    } else {
+        compose_dir.join("lcp.lock")
+    };
+    let lock_path = opts.lock_path.clone().unwrap_or(default_lock);
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -101,16 +124,30 @@ fn run() -> Result<()> {
         })?;
     }
 
-    let cache_dir = determine_cache_dir(&opts, &compose_dir)?;
+    let prefer_current_cache =
+        compose_holder.is_temporary() && opts.cache_dir.is_none() && !opts.global_cache;
+    let cache_dir = determine_cache_dir(&opts, &compose_dir, prefer_current_cache)?;
     fs::create_dir_all(&cache_dir)
         .with_context(|| format!("Unable to create cache directory {}", cache_dir.display()))?;
-    std::env::set_var("LCOD_CACHE_DIR", &cache_dir);
-
-    let initial_state = load_input_state(opts.input)?;
-
-    let compose_steps = load_compose(&compose_path)?;
+    env::set_var("LCOD_CACHE_DIR", &cache_dir);
 
     let registry = setup_registry();
+
+    let has_manifest = compose_dir.join("lcp.toml").is_file();
+    if opts.resolve && !has_manifest {
+        eprintln!(
+            "warning: --resolve requested but no lcp.toml found in {}; skipping resolver pipeline",
+            compose_dir.display()
+        );
+    }
+    let should_resolve = (opts.resolve || !lock_path.exists()) && has_manifest;
+    if should_resolve {
+        run_resolver_pipeline(&registry, &compose_dir, &lock_path)?;
+    }
+
+    let initial_state = load_input_state(opts.input)?;
+    let compose_steps = load_compose(compose_path)?;
+
     let mut ctx = registry.context();
 
     // ensure initial state is an object
@@ -129,6 +166,72 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+fn acquire_compose(input: &Path) -> Result<ComposeHandle> {
+    if let Some(url) = parse_remote_url(input) {
+        return download_compose(&url);
+    }
+    let canonical = canonicalise_path(input)
+        .with_context(|| format!("Unable to read compose path {}", input.display()))?;
+    if !canonical.is_file() {
+        return Err(anyhow!(
+            "Compose path {} is not a regular file",
+            canonical.display()
+        ));
+    }
+    Ok(ComposeHandle::local(canonical))
+}
+
+fn parse_remote_url(input: &Path) -> Option<Url> {
+    let raw = input.to_string_lossy();
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        Url::parse(&raw).ok()
+    } else {
+        None
+    }
+}
+
+fn download_compose(url: &Url) -> Result<ComposeHandle> {
+    let agent = ureq::Agent::new();
+    let response = agent
+        .get(url.as_str())
+        .call()
+        .map_err(|err| anyhow!("Failed to download compose from {}: {}", url, err))?;
+    if response.status() >= 400 {
+        return Err(anyhow!(
+            "Download failed for {}: HTTP {}",
+            url,
+            response.status()
+        ));
+    }
+    let mut reader = response.into_reader();
+    let mut buffer = Vec::new();
+    reader
+        .read_to_end(&mut buffer)
+        .with_context(|| format!("Unable to read response body from {}", url))?;
+
+    let temp_dir = TempDirBuilder::new()
+        .prefix("lcod-compose-")
+        .tempdir()
+        .context("Unable to create temporary directory for compose download")?;
+    let filename = derive_remote_filename(url);
+    let path = temp_dir.path().join(filename);
+    fs::write(&path, &buffer)
+        .with_context(|| format!("Unable to write downloaded compose to {}", path.display()))?;
+
+    Ok(ComposeHandle::temporary(path, temp_dir))
+}
+
+fn derive_remote_filename(url: &Url) -> PathBuf {
+    let path = Path::new(url.path());
+    if let Some(name) = path.file_name().filter(|n| !n.is_empty()) {
+        PathBuf::from(name)
+    } else if url.path().ends_with(".json") {
+        PathBuf::from("compose.json")
+    } else {
+        PathBuf::from("compose.yaml")
+    }
+}
+
 fn canonicalise_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
@@ -140,7 +243,11 @@ fn canonicalise_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn determine_cache_dir(opts: &CliOptions, compose_dir: &Path) -> Result<PathBuf> {
+fn determine_cache_dir(
+    opts: &CliOptions,
+    compose_dir: &Path,
+    prefer_current: bool,
+) -> Result<PathBuf> {
     if let Some(explicit) = &opts.cache_dir {
         return canonicalise_path(explicit);
     }
@@ -148,6 +255,10 @@ fn determine_cache_dir(opts: &CliOptions, compose_dir: &Path) -> Result<PathBuf>
         let home = home_dir().ok_or_else(|| anyhow!("Unable to locate home directory"))?;
         let dir = home.join(".lcod").join("cache");
         return Ok(dir);
+    }
+    if prefer_current {
+        let cwd = env::current_dir().context("Unable to locate current directory for cache")?;
+        return Ok(cwd.join(".lcod").join("cache"));
     }
     Ok(compose_dir.join(".lcod").join("cache"))
 }
@@ -273,6 +384,81 @@ fn candidate_spec_paths() -> Vec<PathBuf> {
         candidates.push(cwd.join("../../lcod-spec"));
     }
     candidates
+}
+
+fn run_resolver_pipeline(registry: &Registry, project_path: &Path, lock_path: &Path) -> Result<()> {
+    let compose_path = resolver_compose_path()?;
+    let steps = load_compose(&compose_path)?;
+    let mut ctx = registry.context();
+    let state = json!({
+        "projectPath": project_path.to_string_lossy(),
+        "configPath": Value::Null,
+        "outputPath": lock_path.to_string_lossy(),
+    });
+
+    let result = run_compose(&mut ctx, &steps, state)
+        .with_context(|| "Resolver pipeline execution failed")?;
+
+    if let Some(warnings) = result.get("warnings").and_then(Value::as_array) {
+        if !warnings.is_empty() {
+            eprintln!("resolver warnings:");
+            for warning in warnings {
+                if let Some(message) = warning.as_str() {
+                    eprintln!("  - {}", message);
+                } else {
+                    eprintln!("  - {}", warning);
+                }
+            }
+        }
+    }
+
+    if !lock_path.exists() {
+        return Err(anyhow!(
+            "Resolver pipeline did not produce lockfile at {}",
+            lock_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolver_compose_path() -> Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(home) = env::var("LCOD_HOME") {
+        candidates.push(
+            PathBuf::from(&home)
+                .join("resolver")
+                .join("packages")
+                .join("resolver")
+                .join("compose.yaml"),
+        );
+    }
+    if let Ok(path) = env::var("LCOD_RESOLVER_COMPOSE") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
+        let base = PathBuf::from(&path);
+        candidates.push(base.join("packages").join("resolver").join("compose.yaml"));
+        candidates.push(PathBuf::from(path).join("compose.yaml"));
+    }
+    if let Ok(spec) = env::var("SPEC_REPO_PATH") {
+        candidates.push(
+            PathBuf::from(spec)
+                .join("packages")
+                .join("resolver")
+                .join("compose.yaml"),
+        );
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(anyhow!(
+        "Unable to locate resolver compose; ensure LCOD_HOME or LCOD_RESOLVER_PATH is configured"
+    ))
 }
 
 fn load_compose(path: &Path) -> Result<Vec<Step>> {
