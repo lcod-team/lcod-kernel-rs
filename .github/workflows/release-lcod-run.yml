@@ -74,12 +74,12 @@ jobs:
           echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
           echo "CC=x86_64-w64-mingw32-gcc" >> "$GITHUB_ENV"
           echo "CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
-          echo "AR=x86_64-w64-mingw32-ar" >> "$GITHUB_ENV"
-          echo "RANLIB=x86_64-w64-mingw32-ranlib" >> "$GITHUB_ENV"
+          echo "AR=ar" >> "$GITHUB_ENV"
+          echo "RANLIB=ranlib" >> "$GITHUB_ENV"
           echo "CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc" >> "$GITHUB_ENV"
           echo "CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
-          echo "AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar" >> "$GITHUB_ENV"
-          echo "RANLIB_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ranlib" >> "$GITHUB_ENV"
+          echo "AR_x86_64_pc_windows_gnu=ar" >> "$GITHUB_ENV"
+          echo "RANLIB_x86_64_pc_windows_gnu=ranlib" >> "$GITHUB_ENV"
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
