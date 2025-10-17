@@ -189,3 +189,51 @@ fn parse_json_toml_and_csv() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn array_length_and_push() -> Result<()> {
+    let mut ctx = context();
+    let length_res = ctx.call(
+        "lcod://contract/core/array/length@1",
+        json!({ "items": [1, 2, 3] }),
+        None,
+    )?;
+    assert_eq!(length_res["length"].as_u64(), Some(3));
+
+    let push_res = ctx.call(
+        "lcod://contract/core/array/push@1",
+        json!({ "items": [1, 2, 3], "value": 4 }),
+        None,
+    )?;
+    assert_eq!(push_res["length"].as_u64(), Some(4));
+    assert_eq!(push_res["items"], json!([1, 2, 3, 4]));
+
+    Ok(())
+}
+
+#[test]
+fn object_get_and_set() -> Result<()> {
+    let mut ctx = context();
+    let get_res = ctx.call(
+        "lcod://contract/core/object/get@1",
+        json!({ "object": { "foo": { "bar": 7 } }, "path": ["foo", "bar"] }),
+        None,
+    )?;
+    assert_eq!(get_res["value"], json!(7));
+    assert!(get_res["found"].as_bool().unwrap());
+
+    let set_res = ctx.call(
+        "lcod://contract/core/object/set@1",
+        json!({
+            "object": {},
+            "path": ["foo", "bar"],
+            "value": 9,
+            "createMissing": true
+        }),
+        None,
+    )?;
+    assert_eq!(set_res["object"], json!({ "foo": { "bar": 9 } }));
+    assert!(set_res["created"].as_bool().unwrap());
+
+    Ok(())
+}
