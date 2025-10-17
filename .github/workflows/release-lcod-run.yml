@@ -18,7 +18,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: lcod-run-linux-x86_64
             archive: tar.gz
-            rustflags: "-C target-cpu=native"
+            rustflags: ""
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: lcod-run-macos-x86_64
