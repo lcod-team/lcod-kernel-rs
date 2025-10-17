@@ -19,6 +19,11 @@ jobs:
             artifact: lcod-run-linux-x86_64
             archive: tar.gz
             rustflags: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: lcod-run-linux-arm64
+            archive: tar.gz
+            rustflags: ""
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: lcod-run-macos-x86_64
@@ -160,3 +165,13 @@ jobs:
         with:
           files: |
             release-assets/**/*
+      - name: Install Linux cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config-aarch64-linux-gnu
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ranlib" >> "$GITHUB_ENV"
