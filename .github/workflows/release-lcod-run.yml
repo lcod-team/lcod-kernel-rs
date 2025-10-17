@@ -24,6 +24,11 @@ jobs:
             archive: tar.gz
             mac_deployment_target: "13.0"
             rustflags: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: lcod-run-windows-x86_64
+            archive: zip
+            rustflags: ""
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
       CARGO_TERM_COLOR: always
@@ -47,6 +52,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: lcod-spec/package-lock.json
 
       - name: Install spec dependencies
         working-directory: lcod-spec
@@ -60,6 +67,25 @@ jobs:
           profile: minimal
           target: ${{ matrix.target }}
 
+      - name: Setup LLVM (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: llvm/actions/setup-llvm@v1
+        with:
+          version: "17"
+
+      - name: Configure clang toolchain (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+          echo "AR=llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB=llvm-ranlib" >> "$GITHUB_ENV"
+          echo "CC_x86_64_pc_windows_msvc=clang" >> "$GITHUB_ENV"
+          echo "CXX_x86_64_pc_windows_msvc=clang++" >> "$GITHUB_ENV"
+          echo "AR_x86_64_pc_windows_msvc=llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_x86_64_pc_windows_msvc=llvm-ranlib" >> "$GITHUB_ENV"
+
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
@@ -72,6 +98,7 @@ jobs:
         run: node scripts/export-runtime.mjs
 
       - name: Build runtime bundle
+        id: bundle
         shell: bash
         env:
           RESOLVER_REPO_PATH: ${{ github.workspace }}/lcod-resolver
@@ -79,14 +106,15 @@ jobs:
           set -euo pipefail
           cd lcod-spec
           node scripts/package-runtime.mjs --output dist/runtime --label "${GITHUB_SHA::7}"
+          echo "archive=$PWD/dist/runtime/lcod-runtime-${GITHUB_SHA::7}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Build lcod-run
         shell: bash
         env:
           RESOLVER_REPO_PATH: ${{ github.workspace }}/lcod-resolver
+          LCOD_EMBED_RUNTIME: ${{ steps.bundle.outputs.archive }}
         run: |
           set -euo pipefail
-          export LCOD_EMBED_RUNTIME="$PWD/lcod-spec/dist/runtime/lcod-runtime-${GITHUB_SHA::7}.tar.gz"
           cargo build --release --bin lcod_run --target ${{ matrix.target }}
 
       - name: Prepare artifact

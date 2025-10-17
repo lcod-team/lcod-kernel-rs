@@ -14,6 +14,7 @@ use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::http::register_http_contracts;
 use lcod_kernel_rs::registry::Registry;
 use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
+use lcod_kernel_rs::Context as KernelContext;
 use serde_json::{json, Value};
 use serde_yaml;
 use sha2::{Digest, Sha256};
@@ -87,6 +88,15 @@ struct CliOptions {
 fn main() {
     if let Err(err) = run() {
         eprintln!("Error: {err}");
+        let mut sources = err.chain().skip(1);
+        let mut idx = 0usize;
+        while let Some(cause) = sources.next() {
+            if idx == 0 {
+                eprintln!("Caused by:");
+            }
+            idx += 1;
+            eprintln!("  {idx}: {cause}");
+        }
         std::process::exit(1);
     }
 }
@@ -291,7 +301,21 @@ fn setup_registry() -> Registry {
     register_http_contracts(&registry);
     register_tooling(&registry);
     register_resolver_axioms(&registry);
+    register_builtin_echo(&registry);
     registry
+}
+
+fn register_builtin_echo(registry: &Registry) {
+    registry.register("lcod://impl/echo@1", builtin_echo_contract);
+}
+
+fn builtin_echo_contract(
+    _ctx: &mut KernelContext,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let value = input.get("value").cloned().unwrap_or(Value::Null);
+    Ok(json!({ "val": value }))
 }
 
 fn ensure_runtime_home() -> Result<()> {
@@ -352,7 +376,29 @@ fn install_embedded_runtime(bytes: &[u8]) -> Result<PathBuf> {
         return Err(anyhow!("Failed to unpack embedded runtime bundle: {err}"));
     }
 
-    Ok(target)
+    let mut final_path = target.clone();
+    if !runtime_manifest_present(&final_path) {
+        let mut subdirs = fs::read_dir(&target)
+            .with_context(|| format!("Unable to inspect runtime directory {}", target.display()))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .collect::<Vec<_>>();
+        if subdirs.len() == 1 {
+            let candidate = subdirs.pop().expect("length checked").path();
+            if runtime_manifest_present(&candidate) {
+                final_path = candidate;
+            }
+        }
+    }
+
+    if !runtime_manifest_present(&final_path) {
+        let _ = fs::remove_dir_all(&target);
+        return Err(anyhow!(
+            "Embedded runtime bundle does not contain manifest.json"
+        ));
+    }
+
+    Ok(final_path)
 }
 
 fn set_spec_repo_hint() {
