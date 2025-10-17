@@ -86,6 +86,7 @@ jobs:
           echo "CXX_x86_64_pc_windows_msvc=clang++" >> "$GITHUB_ENV"
           echo "AR_x86_64_pc_windows_msvc=llvm-ar" >> "$GITHUB_ENV"
           echo "RANLIB_x86_64_pc_windows_msvc=llvm-ranlib" >> "$GITHUB_ENV"
+          echo "CFLAGS_x86_64_pc_windows_msvc=-include ${{ github.workspace }}/ci/quickjs_win_compat.h -DCONFIG_WIN32=1" >> "$GITHUB_ENV"
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
