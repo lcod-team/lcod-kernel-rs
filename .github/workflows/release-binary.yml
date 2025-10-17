@@ -31,10 +31,8 @@ jobs:
           echo "bundle_label=$bundle_label" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
           profile: minimal
 
       - name: Cache cargo artifacts
