@@ -212,6 +212,19 @@ fn array_length_and_push() -> Result<()> {
 }
 
 #[test]
+fn array_append_concatenates_values() -> Result<()> {
+    let mut ctx = context();
+    let res = ctx.call(
+        "lcod://contract/core/array/append@1",
+        json!({ "array": ["alpha"], "items": ["beta"], "item": "gamma" }),
+        None,
+    )?;
+    assert_eq!(res["value"], json!(["alpha", "beta", "gamma"]));
+    assert_eq!(res["length"].as_u64(), Some(3));
+    Ok(())
+}
+
+#[test]
 fn object_get_and_set() -> Result<()> {
     let mut ctx = context();
     let get_res = ctx.call(
@@ -235,5 +248,65 @@ fn object_get_and_set() -> Result<()> {
     assert_eq!(set_res["object"], json!({ "foo": { "bar": 9 } }));
     assert!(set_res["created"].as_bool().unwrap());
 
+    Ok(())
+}
+
+#[test]
+fn object_merge_supports_deep_merge() -> Result<()> {
+    let mut ctx = context();
+    let res = ctx.call(
+        "lcod://contract/core/object/merge@1",
+        json!({
+            "left": { "a": 1, "nested": { "flag": true }, "arr": [1, 2] },
+            "right": { "b": 2, "nested": { "flag": false, "extra": "x" }, "arr": [3] },
+            "deep": true,
+            "arrayStrategy": "concat"
+        }),
+        None,
+    )?;
+    assert_eq!(
+        res["value"],
+        json!({
+            "a": 1,
+            "nested": { "flag": false, "extra": "x" },
+            "arr": [1, 2, 3],
+            "b": 2
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn string_format_renders_placeholders() -> Result<()> {
+    let mut ctx = context();
+    let res = ctx.call(
+        "lcod://contract/core/string/format@1",
+        json!({
+            "template": "Hello {user.name}",
+            "values": { "user": { "name": "Ada" } }
+        }),
+        None,
+    )?;
+    assert_eq!(res["value"], json!("Hello Ada"));
+    Ok(())
+}
+
+#[test]
+fn json_encode_decode_roundtrip() -> Result<()> {
+    let mut ctx = context();
+    let encoded = ctx.call(
+        "lcod://contract/core/json/encode@1",
+        json!({ "value": { "b": 2, "a": 1 }, "sortKeys": true }),
+        None,
+    )?;
+    let encoded_text = encoded["text"].as_str().unwrap();
+    assert!(encoded_text.starts_with("{\"a\""));
+
+    let decoded = ctx.call(
+        "lcod://contract/core/json/decode@1",
+        json!({ "text": encoded_text }),
+        None,
+    )?;
+    assert_eq!(decoded["value"]["a"], json!(1));
     Ok(())
 }

@@ -5,6 +5,7 @@ Rust reference implementation of the LCOD kernel. It exposes:
 - A lightweight `Registry`/`Context` to call contracts, implementations and flow blocks.
 - Compose runner with slot orchestration and stream handles.
 - Minimal tooling (demo registry, test harness) mirroring the JavaScript substrate.
+- Core library primitives (`core/object`, `core/array`, `core/string`, `core/json`) published as axioms so most `tooling/script@1` use-cases can be expressed declaratively.
 
 See [`docs/runtime-rust.md`](https://github.com/lcod-team/lcod-spec/blob/main/docs/runtime-rust.md) in the spec repository for the
 architecture blueprint and current contract coverage. In short:
@@ -19,7 +20,8 @@ architecture blueprint and current contract coverage. In short:
 
 ```bash
 cargo test                 # kernel unit/integration tests
-cargo run --bin test_specs # execute shared spec fixtures from lcod-spec/tests/spec
+SPEC_REPO_PATH=/path/to/lcod-spec LCOD_SPEC_PATH=/path/to/lcod-spec cargo run --bin test_specs
+# execute shared spec fixtures from lcod-spec/tests/spec (std_primitives included)
 cargo run --bin run_compose -- --compose ../lcod-spec/examples/env/http_demo/compose.yaml --serve
 # run an LCOD compose (registers core/flow/tooling/http) and keep servers alive until Ctrl+C
 # resolver helpers: --project <dir>, --config <file>, --output <file>, --cache-dir <dir>
@@ -29,7 +31,7 @@ cargo run --bin run_compose -- --compose ../lcod-spec/examples/env/http_demo/com
 
 The spec fixtures require the `lcod-spec` repository to be accessible. By default
 we look for sibling directories; override with `SPEC_REPO_PATH=/path/to/lcod-spec`
-when running locally or in CI.
+and `LCOD_SPEC_PATH=/path/to/lcod-spec` when running locally or in CI.
 
 ## Prebuilt CLI
 

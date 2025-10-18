@@ -3,10 +3,12 @@ pub mod fs;
 pub mod git;
 pub mod hash;
 pub mod http;
+pub mod json;
 pub mod object;
 pub mod parse;
 pub mod path;
 pub mod streams;
+pub mod string;
 
 use crate::registry::Registry;
 
@@ -23,4 +25,6 @@ pub fn register_core(registry: &Registry) {
     streams::register_streams(registry);
     array::register_array(registry);
     object::register_object(registry);
+    string::register_string(registry);
+    json::register_json(registry);
 }

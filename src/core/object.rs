@@ -5,14 +5,18 @@ use crate::registry::{Context, Registry};
 
 const CONTRACT_GET: &str = "lcod://contract/core/object/get@1";
 const CONTRACT_SET: &str = "lcod://contract/core/object/set@1";
+const CONTRACT_MERGE: &str = "lcod://contract/core/object/merge@1";
 const AXIOM_GET: &str = "lcod://axiom/object/get@1";
 const AXIOM_SET: &str = "lcod://axiom/object/set@1";
+const AXIOM_MERGE: &str = "lcod://axiom/object/merge@1";
 
 pub fn register_object(registry: &Registry) {
     registry.register(CONTRACT_GET, object_get_contract);
     registry.register(CONTRACT_SET, object_set_contract);
+    registry.register(CONTRACT_MERGE, object_merge_contract);
     registry.set_binding(AXIOM_GET, CONTRACT_GET);
     registry.set_binding(AXIOM_SET, CONTRACT_SET);
+    registry.set_binding(AXIOM_MERGE, CONTRACT_MERGE);
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +50,57 @@ fn parse_path(path_value: &Value) -> Result<Vec<PathSegment>> {
         }
     }
     Ok(segments)
+}
+
+fn normalize_array_strategy(value: Option<&Value>) -> &'static str {
+    match value.and_then(Value::as_str) {
+        Some("concat") => "concat",
+        _ => "replace",
+    }
+}
+
+fn merge_objects(
+    left: &Value,
+    right: &Value,
+    deep: bool,
+    array_strategy: &'static str,
+    conflicts: &mut Vec<String>,
+    collect_conflicts: bool,
+) -> Value {
+    let mut result = left.as_object().cloned().unwrap_or_else(Map::new);
+    if let Some(obj) = right.as_object() {
+        for (key, right_value) in obj {
+            if collect_conflicts {
+                conflicts.push(key.clone());
+            }
+            let merged_value = if deep {
+                match (result.get(key), right_value) {
+                    (Some(Value::Object(lhs_obj)), Value::Object(rhs_obj)) => merge_objects(
+                        &Value::Object(lhs_obj.clone()),
+                        &Value::Object(rhs_obj.clone()),
+                        true,
+                        array_strategy,
+                        conflicts,
+                        false,
+                    ),
+                    (Some(Value::Array(lhs_arr)), Value::Array(rhs_arr)) => {
+                        if array_strategy == "concat" {
+                            let mut merged = lhs_arr.clone();
+                            merged.extend(rhs_arr.iter().cloned());
+                            Value::Array(merged)
+                        } else {
+                            Value::Array(rhs_arr.clone())
+                        }
+                    }
+                    _ => right_value.clone(),
+                }
+            } else {
+                right_value.clone()
+            };
+            result.insert(key.clone(), merged_value);
+        }
+    }
+    Value::Object(result)
 }
 
 fn object_get_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
@@ -215,6 +270,40 @@ fn initial_container(segment: Option<&PathSegment>) -> Value {
     }
 }
 
+fn object_merge_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let left = input
+        .get("left")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let right = input
+        .get("right")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+
+    if !left.is_object() || !right.is_object() {
+        return Err(anyhow!("`left` and `right` must be objects"));
+    }
+
+    let deep = input.get("deep").and_then(Value::as_bool).unwrap_or(false);
+    let array_strategy = normalize_array_strategy(input.get("arrayStrategy"));
+
+    let mut conflicts = Vec::new();
+    let merged = merge_objects(&left, &right, deep, array_strategy, &mut conflicts, true);
+    conflicts.sort();
+    conflicts.dedup();
+
+    let mut output = Map::new();
+    output.insert("value".to_string(), merged);
+    if !conflicts.is_empty() {
+        output.insert(
+            "conflicts".to_string(),
+            Value::Array(conflicts.into_iter().map(Value::String).collect()),
+        );
+    }
+
+    Ok(Value::Object(output))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +342,46 @@ mod tests {
         .unwrap();
         assert_eq!(res["object"], json!({ "foo": { "bar": 42 } }));
         assert!(res["created"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn merge_combines_objects() {
+        let registry = Registry::new();
+        register_object(&registry);
+        let mut ctx = registry.context();
+        let shallow = object_merge_contract(
+            &mut ctx,
+            json!({
+                "left": { "a": 1, "nested": { "flag": true } },
+                "right": { "b": 2, "nested": { "flag": false } }
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            shallow["value"],
+            json!({ "a": 1, "nested": { "flag": false }, "b": 2 })
+        );
+        assert_eq!(shallow["conflicts"], json!(["b", "nested"]));
+
+        let deep = object_merge_contract(
+            &mut ctx,
+            json!({
+                "left": { "a": 1, "nested": { "flag": true }, "arr": [1, 2] },
+                "right": { "nested": { "flag": false, "extra": "x" }, "arr": [3] },
+                "deep": true,
+                "arrayStrategy": "concat"
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            deep["value"],
+            json!({
+                "a": 1,
+                "nested": { "flag": false, "extra": "x" },
+                "arr": [1, 2, 3]
+            })
+        );
     }
 }

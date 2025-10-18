@@ -47,3 +47,8 @@ Next:
 
 ## M6 — Service demo
 - [x] HTTP demo (`env/http_host@0.1.0`, `project/http_app@0.1.0`): parity with Node plus tests.
+
+## M8 — Standard library primitives
+- [x] M8-02 Implement `core/object/merge@1`, `core/array/append@1`, `core/string/format@1`,
+  and `core/json/{encode,decode}@1`; added unit coverage and spec fixture `std_primitives`.
+- [ ] M8-03 Wire the primitives into higher-level toolchains (resolver/registry) once the JS substrate is updated.
