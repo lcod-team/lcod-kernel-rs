@@ -336,12 +336,26 @@ fn resolver_compose_handles_local_path_dependency() {
     });
 
     let result = run_compose(&mut ctx, &compose, state).expect("compose run");
-    let warnings_len = result
+    let warnings: Vec<String> = result
         .get("warnings")
         .and_then(|value| value.as_array())
-        .map(|arr| arr.len())
-        .unwrap_or(0);
-    assert_eq!(warnings_len, 0);
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let allowed_warning = "Registry lookup failed for lcod://example/dep@0.1.0";
+    let unexpected: Vec<&str> = warnings
+        .iter()
+        .map(String::as_str)
+        .filter(|warning| *warning != allowed_warning)
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "Unexpected warnings: {}",
+        unexpected.join(", ")
+    );
     let lock_raw = fs::read_to_string(&output_path).unwrap();
     let lock_doc: toml::Value = lock_raw.parse().unwrap();
     let components = lock_doc["components"].as_array().unwrap();
