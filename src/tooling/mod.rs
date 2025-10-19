@@ -345,45 +345,68 @@ fn build_helper_definitions() -> Vec<ResolverHelperDef> {
 
 fn gather_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut push = |kind: CandidateKind, path: PathBuf, out: &mut Vec<Candidate>| {
+        if !path.exists() {
+            return;
+        }
+        let key = format!("{:?}:{}", kind, path.display());
+        if !seen.insert(key) {
+            return;
+        }
+        out.push(Candidate { kind, path });
+    };
     if let Some(runtime_resolver) = runtime_resolver_root() {
-        out.push(Candidate {
-            kind: CandidateKind::Root,
-            path: runtime_resolver,
-        });
+        push(CandidateKind::Root, runtime_resolver, &mut out);
     }
     if let Some(runtime) = runtime_root() {
         let tooling_resolver = runtime.join("tooling").join("resolver");
-        if tooling_resolver.is_dir() {
-            out.push(Candidate {
-                kind: CandidateKind::Legacy,
-                path: tooling_resolver,
-            });
-        }
+        push(CandidateKind::Legacy, tooling_resolver, &mut out);
         let tooling_registry = runtime.join("tooling").join("registry");
-        if tooling_registry.is_dir() {
-            out.push(Candidate {
-                kind: CandidateKind::Legacy,
-                path: tooling_registry,
-            });
-        }
+        push(CandidateKind::Legacy, tooling_registry, &mut out);
     }
     if let Ok(path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
-        out.push(Candidate {
-            kind: CandidateKind::Components,
-            path: PathBuf::from(path),
-        });
+        push(CandidateKind::Components, PathBuf::from(path), &mut out);
     }
     if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
-        out.push(Candidate {
-            kind: CandidateKind::Root,
-            path: PathBuf::from(path),
-        });
+        push(CandidateKind::Root, PathBuf::from(path), &mut out);
+    }
+    if let Some(spec_root) = resolve_spec_root() {
+        let tooling_root = spec_root.join("tooling");
+        push(CandidateKind::Legacy, tooling_root.join("resolver"), &mut out);
+        push(CandidateKind::Legacy, tooling_root.join("registry"), &mut out);
+        push(CandidateKind::Legacy, tooling_root, &mut out);
     }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    out.push(Candidate {
-        kind: CandidateKind::Root,
-        path: manifest_dir.join("..").join("lcod-resolver"),
-    });
+    push(
+        CandidateKind::Root,
+        manifest_dir.join("..").join("lcod-resolver"),
+        &mut out,
+    );
+    if let Some(local_components) = manifest_dir
+        .join("..")
+        .join("lcod-components")
+        .canonicalize()
+        .ok()
+    {
+        push(CandidateKind::Components, local_components.clone(), &mut out);
+        push(
+            CandidateKind::Components,
+            local_components
+                .join("packages")
+                .join("std")
+                .join("components"),
+            &mut out,
+        );
+    } else if let Ok(path) = env::var("LCOD_COMPONENTS_PATH") {
+        let base = PathBuf::from(path);
+        push(CandidateKind::Components, base.clone(), &mut out);
+        push(
+            CandidateKind::Components,
+            base.join("packages").join("std").join("components"),
+            &mut out,
+        );
+    }
     out
 }
 
@@ -417,16 +440,282 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
         existing.insert(id.to_string());
     };
 
-    ensure_helper(
-        "lcod://tooling/registry/catalog/generate@0.1.0",
-        &["tooling", "registry", "catalog", "compose.yaml"],
-        "tooling/registry/catalog",
-    );
-    ensure_helper(
-        "lcod://tooling/resolver/register_components@0.1.0",
-        &["tooling", "resolver", "register_components", "compose.yaml"],
-        "tooling/resolver/register_components",
-    );
+    let definitions: &[(&str, &[&str], &str)] = &[
+        (
+            "lcod://tooling/value/default_object@0.1.0",
+            &["tooling", "value", "default_object", "compose.yaml"],
+            "tooling/value/default_object",
+        ),
+        (
+            "lcod://tooling/value/default_array@0.1.0",
+            &["tooling", "value", "default_array", "compose.yaml"],
+            "tooling/value/default_array",
+        ),
+        (
+            "lcod://tooling/value/is_object@0.1.0",
+            &["tooling", "value", "is_object", "compose.yaml"],
+            "tooling/value/is_object",
+        ),
+        (
+            "lcod://tooling/value/is_array@0.1.0",
+            &["tooling", "value", "is_array", "compose.yaml"],
+            "tooling/value/is_array",
+        ),
+        (
+            "lcod://tooling/value/is_string_nonempty@0.1.0",
+            &["tooling", "value", "is_string_nonempty", "compose.yaml"],
+            "tooling/value/is_string_nonempty",
+        ),
+        (
+            "lcod://tooling/array/append@0.1.0",
+            &["tooling", "array", "append", "compose.yaml"],
+            "tooling/array/append",
+        ),
+        (
+            "lcod://tooling/array/compact@0.1.0",
+            &["tooling", "array", "compact", "compose.yaml"],
+            "tooling/array/compact",
+        ),
+        (
+            "lcod://tooling/array/concat@0.1.0",
+            &["tooling", "array", "concat", "compose.yaml"],
+            "tooling/array/concat",
+        ),
+        (
+            "lcod://tooling/array/filter_objects@0.1.0",
+            &["tooling", "array", "filter_objects", "compose.yaml"],
+            "tooling/array/filter_objects",
+        ),
+        (
+            "lcod://tooling/array/length@0.1.0",
+            &["tooling", "array", "length", "compose.yaml"],
+            "tooling/array/length",
+        ),
+        (
+            "lcod://tooling/array/shift@0.1.0",
+            &["tooling", "array", "shift", "compose.yaml"],
+            "tooling/array/shift",
+        ),
+        (
+            "lcod://tooling/fs/read_optional@0.1.0",
+            &["tooling", "fs", "read_optional", "compose.yaml"],
+            "tooling/fs/read_optional",
+        ),
+        (
+            "lcod://tooling/json/decode_object@0.1.0",
+            &["tooling", "json", "decode_object", "compose.yaml"],
+            "tooling/json/decode_object",
+        ),
+        (
+            "lcod://tooling/hash/sha256_base64@0.1.0",
+            &["tooling", "hash", "sha256_base64", "compose.yaml"],
+            "tooling/hash/sha256_base64",
+        ),
+        (
+            "lcod://tooling/path/join_chain@0.1.0",
+            &["tooling", "path", "join_chain", "compose.yaml"],
+            "tooling/path/join_chain",
+        ),
+        (
+            "lcod://tooling/path/dirname@0.1.0",
+            &["tooling", "path", "dirname", "compose.yaml"],
+            "tooling/path/dirname",
+        ),
+        (
+            "lcod://tooling/path/is_absolute@0.1.0",
+            &["tooling", "path", "is_absolute", "compose.yaml"],
+            "tooling/path/is_absolute",
+        ),
+        (
+            "lcod://tooling/path/to_file_url@0.1.0",
+            &["tooling", "path", "to_file_url", "compose.yaml"],
+            "tooling/path/to_file_url",
+        ),
+        (
+            "lcod://core/array/append@0.1.0",
+            &["core", "array", "append", "compose.yaml"],
+            "core/array/append",
+        ),
+        (
+            "lcod://core/json/decode@0.1.0",
+            &["core", "json", "decode", "compose.yaml"],
+            "core/json/decode",
+        ),
+        (
+            "lcod://core/json/encode@0.1.0",
+            &["core", "json", "encode", "compose.yaml"],
+            "core/json/encode",
+        ),
+        (
+            "lcod://core/object/merge@0.1.0",
+            &["core", "object", "merge", "compose.yaml"],
+            "core/object/merge",
+        ),
+        (
+            "lcod://core/string/format@0.1.0",
+            &["core", "string", "format", "compose.yaml"],
+            "core/string/format",
+        ),
+        (
+            "lcod://tooling/registry/source/load@0.1.0",
+            &["tooling", "registry", "source", "compose.yaml"],
+            "tooling/registry/source",
+        ),
+        (
+            "lcod://tooling/registry/index@0.1.0",
+            &["tooling", "registry", "index", "compose.yaml"],
+            "tooling/registry/index",
+        ),
+        (
+            "lcod://tooling/registry/select@0.1.0",
+            &["tooling", "registry", "select", "compose.yaml"],
+            "tooling/registry/select",
+        ),
+        (
+            "lcod://tooling/registry/resolution@0.1.0",
+            &["tooling", "registry", "resolution", "compose.yaml"],
+            "tooling/registry/resolution",
+        ),
+        (
+            "lcod://tooling/registry/catalog/generate@0.1.0",
+            &["tooling", "registry", "catalog", "compose.yaml"],
+            "tooling/registry/catalog",
+        ),
+        (
+            "lcod://tooling/registry_sources/build_inline_entry@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "build_inline_entry",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/build_inline_entry",
+        ),
+        (
+            "lcod://tooling/registry_sources/collect_entries@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "collect_entries",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/collect_entries",
+        ),
+        (
+            "lcod://tooling/registry_sources/collect_queue@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "collect_queue",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/collect_queue",
+        ),
+        (
+            "lcod://tooling/registry_sources/load_config@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "load_config",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/load_config",
+        ),
+        (
+            "lcod://tooling/registry_sources/merge_inline_entries@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "merge_inline_entries",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/merge_inline_entries",
+        ),
+        (
+            "lcod://tooling/registry_sources/normalize_pointer@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "normalize_pointer",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/normalize_pointer",
+        ),
+        (
+            "lcod://tooling/registry_sources/partition_normalized@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "partition_normalized",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/partition_normalized",
+        ),
+        (
+            "lcod://tooling/registry_sources/prepare_env@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "prepare_env",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/prepare_env",
+        ),
+        (
+            "lcod://tooling/registry_sources/process_catalogue@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "process_catalogue",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/process_catalogue",
+        ),
+        (
+            "lcod://tooling/registry_sources/process_pointer@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "process_pointer",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/process_pointer",
+        ),
+        (
+            "lcod://tooling/registry_sources/resolve@0.1.0",
+            &[
+                "tooling",
+                "registry_sources",
+                "resolve",
+                "compose.yaml",
+            ],
+            "tooling/registry_sources/resolve",
+        ),
+        (
+            "lcod://tooling/resolver/context/prepare@0.1.0",
+            &["tooling", "resolver", "context", "compose.yaml"],
+            "tooling/resolver/context",
+        ),
+        (
+            "lcod://tooling/resolver/replace/apply@0.1.0",
+            &["tooling", "resolver", "replace", "compose.yaml"],
+            "tooling/resolver/replace",
+        ),
+        (
+            "lcod://tooling/resolver/warnings/merge@0.1.0",
+            &["tooling", "resolver", "warnings", "compose.yaml"],
+            "tooling/resolver/warnings",
+        ),
+        (
+            "lcod://tooling/resolver/register_components@0.1.0",
+            &["tooling", "resolver", "register_components", "compose.yaml"],
+            "tooling/resolver/register_components",
+        ),
+    ];
+
+    for (id, rel_path, base_path) in definitions {
+        ensure_helper(id, rel_path, base_path);
+    }
 }
 
 fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDef> {
