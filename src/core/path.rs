@@ -32,7 +32,8 @@ fn path_join_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Re
         _ => {}
     }
 
-    Ok(json!({ "path": path_to_string(&path) }))
+    let normalized: PathBuf = path.components().collect();
+    Ok(json!({ "path": path_to_string(&normalized) }))
 }
 
 fn push_segment(path: &mut PathBuf, segment: &str) {

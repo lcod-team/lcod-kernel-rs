@@ -92,14 +92,14 @@ fn runtime_resolver_root() -> Option<PathBuf> {
 }
 
 fn resolve_spec_root() -> Option<PathBuf> {
-    if let Some(root) = runtime_root() {
-        return Some(root);
-    }
     if let Ok(env_path) = env::var("SPEC_REPO_PATH") {
         let candidate = PathBuf::from(env_path);
         if candidate.is_dir() {
             return Some(candidate);
         }
+    }
+    if let Some(root) = runtime_root() {
+        return Some(root);
     }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut candidates = Vec::new();

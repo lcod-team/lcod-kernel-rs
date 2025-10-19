@@ -36,9 +36,30 @@ pub fn flow_continue(_ctx: &mut Context, _input: Value, _meta: Option<Value>) ->
 }
 
 pub fn flow_if(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
-    let cond = input.get("cond").and_then(Value::as_bool).unwrap_or(false);
+    let cond = input.get("cond").map_or(false, |value| is_truthy(value));
     let slot_name = if cond { "then" } else { "else" };
     ctx.run_slot(slot_name, None, None)
+}
+
+fn is_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(num) => {
+            if let Some(f) = num.as_f64() {
+                f != 0.0 && !f.is_nan()
+            } else if let Some(i) = num.as_i64() {
+                i != 0
+            } else if let Some(u) = num.as_u64() {
+                u != 0
+            } else {
+                false
+            }
+        }
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) => true,
+        Value::Object(_) => true,
+    }
 }
 
 fn list_from_input(input: &Value) -> Result<Vec<Value>> {

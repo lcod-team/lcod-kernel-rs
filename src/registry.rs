@@ -97,25 +97,30 @@ impl Registry {
         input: Value,
         meta: Option<Value>,
     ) -> Result<Value> {
+        let mut missing_contract_binding = false;
         let func = {
             let inner = self.inner.lock().expect("registry poisoned");
             if let Some(entry) = inner.funcs.get(name) {
                 Some(entry.clone())
-            } else if name.starts_with("lcod://contract/") {
-                if let Some(binding) = inner.bindings.get(name) {
-                    if binding != name {
-                        inner.funcs.get(binding).cloned()
-                    } else {
-                        inner.funcs.get(name).cloned()
-                    }
+            } else if let Some(binding) = inner.bindings.get(name) {
+                if binding != name {
+                    inner.funcs.get(binding).cloned()
                 } else {
-                    None
+                    inner.funcs.get(name).cloned()
                 }
+            } else if name.starts_with("lcod://contract/") {
+                if !inner.bindings.contains_key(name) {
+                    missing_contract_binding = true;
+                }
+                None
             } else {
                 None
             }
         };
         let Some(func) = func else {
+            if missing_contract_binding {
+                return Err(anyhow!("No binding for contract: {name}"));
+            }
             return Err(anyhow!("function not found: {name}"));
         };
         func.call(ctx, input, meta)
@@ -152,25 +157,30 @@ impl Context {
     }
 
     pub fn call(&mut self, name: &str, input: Value, meta: Option<Value>) -> Result<Value> {
+        let mut missing_contract_binding = false;
         let func = {
             let inner = self.registry.lock().expect("registry poisoned");
             if let Some(entry) = inner.funcs.get(name) {
                 Some(entry.clone())
-            } else if name.starts_with("lcod://contract/") {
-                if let Some(binding) = inner.bindings.get(name) {
-                    if binding != name {
-                        inner.funcs.get(binding).cloned()
-                    } else {
-                        inner.funcs.get(name).cloned()
-                    }
+            } else if let Some(binding) = inner.bindings.get(name) {
+                if binding != name {
+                    inner.funcs.get(binding).cloned()
                 } else {
-                    None
+                    inner.funcs.get(name).cloned()
                 }
+            } else if name.starts_with("lcod://contract/") {
+                if !inner.bindings.contains_key(name) {
+                    missing_contract_binding = true;
+                }
+                None
             } else {
                 None
             }
         };
         let Some(func) = func else {
+            if missing_contract_binding {
+                return Err(anyhow!("No binding for contract: {name}"));
+            }
             return Err(anyhow!("function not found: {name}"));
         };
         func.call(self, input, meta)
