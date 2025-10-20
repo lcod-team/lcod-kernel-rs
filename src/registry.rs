@@ -221,6 +221,7 @@ impl Context {
         local_state: Option<Value>,
         slot_vars: Option<Value>,
     ) -> Result<Value> {
+        self.ensure_not_cancelled()?;
         let mut handler = self
             .run_slot_handler
             .take()
@@ -229,6 +230,7 @@ impl Context {
         let slot = slot_vars.unwrap_or(Value::Null);
         let result = handler.run_slot(self, name, local, slot);
         self.run_slot_handler = Some(handler);
+        self.ensure_not_cancelled()?;
         result
     }
 

@@ -166,10 +166,7 @@ fn run() -> Result<()> {
             thread::spawn(move || {
                 thread::sleep(timeout);
                 if !flag.swap(true, Ordering::SeqCst) {
-                    eprintln!(
-                        "Execution timed out after {}",
-                        format_duration(timeout)
-                    );
+                    eprintln!("Execution timed out after {}", format_duration(timeout));
                 }
             });
         }

@@ -35,6 +35,11 @@ pub fn flow_continue(_ctx: &mut Context, _input: Value, _meta: Option<Value>) ->
     Err(FlowSignalError::new("continue").into())
 }
 
+pub fn flow_check_abort(ctx: &mut Context, _input: Value, _meta: Option<Value>) -> Result<Value> {
+    ctx.ensure_not_cancelled()?;
+    Ok(Value::Object(Map::new()))
+}
+
 pub fn flow_if(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
     let cond = input.get("cond").map_or(false, |value| is_truthy(value));
     let slot_name = if cond { "then" } else { "else" };
@@ -172,9 +177,165 @@ pub fn flow_foreach(ctx: &mut Context, input: Value, meta: Option<Value>) -> Res
     Ok(Value::Object(out))
 }
 
+fn interpret_condition(value: &Value) -> Result<(bool, Option<Map<String, Value>>)> {
+    let state_override = value
+        .as_object()
+        .and_then(|map| map.get("state"))
+        .and_then(Value::as_object)
+        .cloned();
+
+    if let Some(map) = value.as_object() {
+        if let Some(cond_value) = map
+            .get("continue")
+            .or_else(|| map.get("cond"))
+            .or_else(|| map.get("value"))
+        {
+            return Ok((is_truthy(cond_value), state_override));
+        }
+        if map.is_empty() {
+            return Ok((false, state_override));
+        }
+        return Err(anyhow!(
+            "flow/while: condition slot must return a boolean or an object with `continue`, `cond`, or `value`"
+        ));
+    }
+
+    Ok((is_truthy(value), state_override))
+}
+
+pub fn flow_while(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let mut state = match input.get("state") {
+        Some(Value::Object(map)) => map.clone(),
+        Some(Value::Null) | None => Map::new(),
+        Some(other) => {
+            return Err(anyhow!(
+                "flow/while: `state` must be an object, got {}",
+                other
+            ))
+        }
+    };
+
+    let max_iterations = match input.get("maxIterations") {
+        Some(Value::Number(num)) => {
+            if let Some(lim) = num.as_u64() {
+                if lim == 0 {
+                    None
+                } else {
+                    Some(lim)
+                }
+            } else {
+                return Err(anyhow!(
+                    "flow/while: `maxIterations` must be a non-negative integer"
+                ));
+            }
+        }
+        Some(Value::Null) | None => None,
+        Some(other) => {
+            return Err(anyhow!(
+                "flow/while: `maxIterations` must be a non-negative integer, got {}",
+                other
+            ))
+        }
+    };
+
+    let mut iterations: u64 = 0;
+
+    loop {
+        ctx.ensure_not_cancelled()?;
+        if let Some(limit) = max_iterations {
+            if iterations >= limit {
+                return Err(anyhow!(
+                    "flow/while: exceeded maxIterations limit ({})",
+                    limit
+                ));
+            }
+        }
+
+        let mut slot_vars = Map::new();
+        slot_vars.insert(
+            "index".to_string(),
+            Value::Number(Number::from(iterations as i64)),
+        );
+        slot_vars.insert("state".to_string(), Value::Object(state.clone()));
+
+        let condition_output = ctx.run_slot(
+            "condition",
+            Some(Value::Object(state.clone())),
+            Some(Value::Object(slot_vars.clone())),
+        )?;
+        let (should_continue, state_override) = interpret_condition(&condition_output)?;
+        if let Some(new_state) = state_override {
+            state = new_state;
+        }
+        if !should_continue {
+            break;
+        }
+
+        let body_result = match ctx.run_slot(
+            "body",
+            Some(Value::Object(state.clone())),
+            Some(Value::Object(slot_vars.clone())),
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                if let Some(signal) = err.downcast_ref::<FlowSignalError>() {
+                    iterations += 1;
+                    if signal.is("continue") {
+                        continue;
+                    }
+                    if signal.is("break") {
+                        break;
+                    }
+                }
+                return Err(err);
+            }
+        };
+
+        if let Value::Object(map) = body_result {
+            state = map;
+        } else if !body_result.is_null() {
+            return Err(anyhow!(
+                "flow/while: body slot must return an object or null, got {}",
+                body_result
+            ));
+        }
+
+        iterations += 1;
+    }
+
+    if iterations == 0 {
+        let mut else_slot_vars = Map::new();
+        else_slot_vars.insert("index".to_string(), Value::Number(Number::from(-1)));
+        else_slot_vars.insert("state".to_string(), Value::Object(state.clone()));
+        let else_value = ctx.run_slot(
+            "else",
+            Some(Value::Object(state.clone())),
+            Some(Value::Object(else_slot_vars)),
+        )?;
+        if let Value::Object(map) = else_value {
+            state = map;
+        } else if !else_value.is_null() {
+            return Err(anyhow!(
+                "flow/while: else slot must return an object or null, got {}",
+                else_value
+            ));
+        }
+    }
+
+    let mut output = Map::new();
+    output.insert("state".to_string(), Value::Object(state));
+    output.insert(
+        "iterations".to_string(),
+        Value::Number(Number::from(iterations as i64)),
+    );
+    Ok(Value::Object(output))
+}
+
 pub fn register_flow(registry: &Registry) {
     registry.register("lcod://flow/break@1", flow_break);
     registry.register("lcod://flow/continue@1", flow_continue);
     registry.register("lcod://flow/if@1", flow_if);
     registry.register("lcod://flow/foreach@1", flow_foreach);
+    registry.register("lcod://flow/check_abort@1", flow_check_abort);
+    registry.register("lcod://flow/while@1", flow_while);
 }
