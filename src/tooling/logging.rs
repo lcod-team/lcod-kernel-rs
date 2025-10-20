@@ -1,8 +1,12 @@
 use std::env;
 use std::io::{stderr, stdout, Write};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
     OnceLock,
+};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
 };
 
 use anyhow::{anyhow, Result};
@@ -41,26 +45,67 @@ fn parse_threshold(value: &str) -> Option<usize> {
     }
 }
 
-fn threshold_cell() -> &'static AtomicUsize {
-    static CELL: OnceLock<AtomicUsize> = OnceLock::new();
-    CELL.get_or_init(|| {
-        let initial = env::var("LCOD_LOG_LEVEL")
-            .ok()
+struct ThresholdState {
+    level: AtomicUsize,
+    signature: AtomicU64,
+}
+
+fn env_signature(value: Option<&str>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn initial_threshold() -> (usize, u64) {
+    let env_value = env::var("LCOD_LOG_LEVEL").ok();
+    let level = env_value
+        .as_deref()
+        .and_then(parse_threshold)
+        .unwrap_or(level_rank("fatal"));
+    let signature = env_signature(env_value.as_deref());
+    (level, signature)
+}
+
+fn threshold_state() -> &'static ThresholdState {
+    static STATE: OnceLock<ThresholdState> = OnceLock::new();
+    STATE.get_or_init(|| {
+        let (level, signature) = initial_threshold();
+        ThresholdState {
+            level: AtomicUsize::new(level),
+            signature: AtomicU64::new(signature),
+        }
+    })
+}
+
+fn refresh_threshold_from_env() -> usize {
+    let env_value = env::var("LCOD_LOG_LEVEL").ok();
+    let signature = env_signature(env_value.as_deref());
+    let state = threshold_state();
+    let current_signature = state.signature.load(Ordering::Relaxed);
+    if current_signature != signature {
+        let level = env_value
             .as_deref()
             .and_then(parse_threshold)
             .unwrap_or(level_rank("fatal"));
-        AtomicUsize::new(initial)
-    })
+        state.level.store(level, Ordering::Relaxed);
+        state.signature.store(signature, Ordering::Relaxed);
+    }
+    state.level.load(Ordering::Relaxed)
 }
 
 pub fn set_kernel_log_threshold(level: &str) {
     if let Some(value) = parse_threshold(level) {
-        threshold_cell().store(value, Ordering::Relaxed);
+        let state = threshold_state();
+        state.level.store(value, Ordering::Relaxed);
+        let env_value = env::var("LCOD_LOG_LEVEL").ok();
+        state
+            .signature
+            .store(env_signature(env_value.as_deref()), Ordering::Relaxed);
     }
 }
 
 fn log_threshold() -> usize {
-    threshold_cell().load(Ordering::Relaxed)
+    refresh_threshold_from_env()
 }
 
 fn has_custom_binding(ctx: &Context) -> bool {
