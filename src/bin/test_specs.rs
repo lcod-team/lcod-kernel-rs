@@ -60,7 +60,7 @@ fn run_test(name: &str, compose_path: &Path) -> Result<TestOutcome> {
     env::set_current_dir(compose_dir)?;
     let previous_log_level = env::var("LCOD_LOG_LEVEL").ok();
     if name == "tooling_log" {
-        env::set_var("LCOD_LOG_LEVEL", "info");
+        env::set_var("LCOD_LOG_LEVEL", "trace");
     }
     let compose = load_compose(&compose_path)?;
 
