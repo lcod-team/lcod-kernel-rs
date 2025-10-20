@@ -135,7 +135,11 @@ fn emit_log(ctx: &mut Context, input: Value, kernel_tags: bool) -> Result<Value>
         return Err(anyhow!("unsupported log level: {level}"));
     }
 
-    let allow_low_level = !kernel_tags && has_custom_binding(ctx);
+    if kernel_tags && level_rank(&level) < log_threshold() {
+        return Ok(Value::Null);
+    }
+
+    let allow_low_level = has_custom_binding(ctx);
     if level_rank(&level) < log_threshold() && !allow_low_level {
         return Ok(Value::Null);
     }
