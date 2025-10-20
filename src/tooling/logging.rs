@@ -139,7 +139,7 @@ fn emit_log(ctx: &mut Context, input: Value, kernel_tags: bool) -> Result<Value>
         return Ok(Value::Null);
     }
 
-    let allow_low_level = has_custom_binding(ctx);
+    let allow_low_level = has_custom_binding(ctx) || !kernel_tags;
     if level_rank(&level) < log_threshold() && !allow_low_level {
         return Ok(Value::Null);
     }
