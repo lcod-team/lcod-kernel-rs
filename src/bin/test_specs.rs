@@ -58,6 +58,10 @@ fn run_test(name: &str, compose_path: &Path) -> Result<TestOutcome> {
     let compose_dir = compose_path.parent().unwrap_or(Path::new("."));
     let original = env::current_dir()?;
     env::set_current_dir(compose_dir)?;
+    let previous_log_level = env::var("LCOD_LOG_LEVEL").ok();
+    if name == "tooling_log" {
+        env::set_var("LCOD_LOG_LEVEL", "info");
+    }
     let compose = load_compose(&compose_path)?;
 
     let registry = Registry::new();
@@ -69,6 +73,10 @@ fn run_test(name: &str, compose_path: &Path) -> Result<TestOutcome> {
     let mut ctx: KernelContext = registry.context();
     let result = run_compose(&mut ctx, &compose, Value::Object(Default::default()));
     env::set_current_dir(original)?;
+    match previous_log_level {
+        Some(value) => env::set_var("LCOD_LOG_LEVEL", value),
+        None => env::remove_var("LCOD_LOG_LEVEL"),
+    }
     let result = result?;
 
     let report = result.get("report").cloned().unwrap_or(Value::Null);
