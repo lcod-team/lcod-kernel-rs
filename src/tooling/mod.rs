@@ -19,7 +19,9 @@ mod registry_scope;
 mod resolver;
 mod script;
 
-pub use logging::{log_kernel_debug, log_kernel_error, log_kernel_info, log_kernel_warn};
+pub use logging::{
+    log_kernel_debug, log_kernel_error, log_kernel_info, log_kernel_warn, set_kernel_log_threshold,
+};
 
 const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
 

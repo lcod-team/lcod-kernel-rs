@@ -13,7 +13,9 @@ use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::http::register_http_contracts;
 use lcod_kernel_rs::registry::Registry;
-use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
+use lcod_kernel_rs::tooling::{
+    register_resolver_axioms, register_tooling, set_kernel_log_threshold,
+};
 use lcod_kernel_rs::Context as KernelContext;
 use serde_json::{json, Value};
 use serde_yaml;
@@ -137,6 +139,7 @@ fn run() -> Result<()> {
 
     if let Some(level) = opts.log_level {
         env::set_var("LCOD_LOG_LEVEL", level.as_str());
+        set_kernel_log_threshold(level.as_str());
     }
 
     ensure_runtime_home()?;

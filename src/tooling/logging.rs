@@ -1,6 +1,9 @@
 use std::env;
 use std::io::{stderr, stdout, Write};
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    OnceLock,
+};
 
 use anyhow::{anyhow, Result};
 use humantime::format_rfc3339;
@@ -38,15 +41,26 @@ fn parse_threshold(value: &str) -> Option<usize> {
     }
 }
 
-fn log_threshold() -> usize {
-    static THRESHOLD: OnceLock<usize> = OnceLock::new();
-    *THRESHOLD.get_or_init(|| {
-        env::var("LCOD_LOG_LEVEL")
+fn threshold_cell() -> &'static AtomicUsize {
+    static CELL: OnceLock<AtomicUsize> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let initial = env::var("LCOD_LOG_LEVEL")
             .ok()
             .as_deref()
             .and_then(parse_threshold)
-            .unwrap_or(level_rank("fatal"))
+            .unwrap_or(level_rank("fatal"));
+        AtomicUsize::new(initial)
     })
+}
+
+pub fn set_kernel_log_threshold(level: &str) {
+    if let Some(value) = parse_threshold(level) {
+        threshold_cell().store(value, Ordering::Relaxed);
+    }
+}
+
+fn log_threshold() -> usize {
+    threshold_cell().load(Ordering::Relaxed)
 }
 
 fn has_custom_binding(ctx: &Context) -> bool {
