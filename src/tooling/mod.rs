@@ -19,7 +19,7 @@ mod registry_scope;
 mod resolver;
 mod script;
 
-use logging::log_kernel_warn;
+pub use logging::{log_kernel_debug, log_kernel_error, log_kernel_info, log_kernel_warn};
 
 const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
 
@@ -373,8 +373,16 @@ fn gather_candidates() -> Vec<Candidate> {
     }
     if let Some(spec_root) = resolve_spec_root() {
         let tooling_root = spec_root.join("tooling");
-        push(CandidateKind::Legacy, tooling_root.join("resolver"), &mut out);
-        push(CandidateKind::Legacy, tooling_root.join("registry"), &mut out);
+        push(
+            CandidateKind::Legacy,
+            tooling_root.join("resolver"),
+            &mut out,
+        );
+        push(
+            CandidateKind::Legacy,
+            tooling_root.join("registry"),
+            &mut out,
+        );
         push(CandidateKind::Legacy, tooling_root, &mut out);
     }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -389,7 +397,11 @@ fn gather_candidates() -> Vec<Candidate> {
         .canonicalize()
         .ok()
     {
-        push(CandidateKind::Components, local_components.clone(), &mut out);
+        push(
+            CandidateKind::Components,
+            local_components.clone(),
+            &mut out,
+        );
         push(
             CandidateKind::Components,
             local_components
@@ -613,12 +625,7 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
         ),
         (
             "lcod://tooling/registry_sources/load_config@0.1.0",
-            &[
-                "tooling",
-                "registry_sources",
-                "load_config",
-                "compose.yaml",
-            ],
+            &["tooling", "registry_sources", "load_config", "compose.yaml"],
             "tooling/registry_sources/load_config",
         ),
         (
@@ -653,12 +660,7 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
         ),
         (
             "lcod://tooling/registry_sources/prepare_env@0.1.0",
-            &[
-                "tooling",
-                "registry_sources",
-                "prepare_env",
-                "compose.yaml",
-            ],
+            &["tooling", "registry_sources", "prepare_env", "compose.yaml"],
             "tooling/registry_sources/prepare_env",
         ),
         (
@@ -683,12 +685,7 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
         ),
         (
             "lcod://tooling/registry_sources/resolve@0.1.0",
-            &[
-                "tooling",
-                "registry_sources",
-                "resolve",
-                "compose.yaml",
-            ],
+            &["tooling", "registry_sources", "resolve", "compose.yaml"],
             "tooling/registry_sources/resolve",
         ),
         (

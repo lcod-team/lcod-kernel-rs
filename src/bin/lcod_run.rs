@@ -4,7 +4,7 @@ use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use dirs::home_dir;
 use flate2::read::GzDecoder;
 use hex;
@@ -56,9 +56,36 @@ impl ComposeHandle {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
+impl LogLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+            LogLevel::Fatal => "fatal",
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "lcod-run")]
-#[command(about = "Execute an LCOD compose with minimal setup")]
+#[command(
+    name = "lcod-run",
+    version,
+    about = "Execute an LCOD compose with minimal setup"
+)]
+#[command(long_about = None)]
 struct CliOptions {
     /// Path to the compose file to execute (YAML/JSON)
     #[arg(long = "compose", short = 'c')]
@@ -83,6 +110,10 @@ struct CliOptions {
     /// Use global cache under ~/.lcod/cache
     #[arg(long = "global-cache", short = 'g', action = ArgAction::SetTrue)]
     global_cache: bool,
+
+    /// Minimum kernel log level (trace|debug|info|warn|error|fatal)
+    #[arg(long = "log-level", value_enum)]
+    log_level: Option<LogLevel>,
 }
 
 fn main() {
@@ -103,6 +134,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let opts = CliOptions::parse();
+
+    if let Some(level) = opts.log_level {
+        env::set_var("LCOD_LOG_LEVEL", level.as_str());
+    }
 
     ensure_runtime_home()?;
 

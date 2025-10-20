@@ -77,6 +77,9 @@ fn log_context_merges_and_restores_tags() -> Result<()> {
         "lcod://impl/testing/logger@1",
         move |_ctx: &mut Context, input: Value, _meta| {
             if let Value::Object(map) = input {
+                if matches!(map.get("message"), Some(Value::String(msg)) if msg == "compose.step") {
+                    return Ok(Value::Null);
+                }
                 capture_clone.lock().unwrap().push(
                     map.get("tags")
                         .cloned()

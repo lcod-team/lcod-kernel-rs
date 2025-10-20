@@ -1,4 +1,6 @@
+use std::env;
 use std::io::{stderr, stdout, Write};
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, Result};
 use humantime::format_rfc3339;
@@ -11,6 +13,47 @@ const KERNEL_HELPER_ID: &str = "lcod://kernel/log@1";
 const LOG_CONTEXT_ID: &str = "lcod://tooling/log.context@1";
 
 const ALLOWED_LEVELS: [&str; 6] = ["trace", "debug", "info", "warn", "error", "fatal"];
+
+fn level_rank(level: &str) -> usize {
+    match level {
+        "trace" => 0,
+        "debug" => 1,
+        "info" => 2,
+        "warn" => 3,
+        "error" => 4,
+        "fatal" => 5,
+        _ => 5,
+    }
+}
+
+fn parse_threshold(value: &str) -> Option<usize> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "trace" => Some(level_rank("trace")),
+        "debug" => Some(level_rank("debug")),
+        "info" => Some(level_rank("info")),
+        "warn" => Some(level_rank("warn")),
+        "error" => Some(level_rank("error")),
+        "fatal" => Some(level_rank("fatal")),
+        _ => None,
+    }
+}
+
+fn log_threshold() -> usize {
+    static THRESHOLD: OnceLock<usize> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        env::var("LCOD_LOG_LEVEL")
+            .ok()
+            .as_deref()
+            .and_then(parse_threshold)
+            .unwrap_or(level_rank("fatal"))
+    })
+}
+
+fn has_custom_binding(ctx: &Context) -> bool {
+    ctx.binding_for(LOG_CONTRACT_ID)
+        .map(|target| target != LOG_CONTRACT_ID && target != KERNEL_HELPER_ID)
+        .unwrap_or(false)
+}
 
 fn current_timestamp() -> String {
     let now = std::time::SystemTime::now();
@@ -48,7 +91,14 @@ fn write_fallback(entry: &Map<String, Value>) {
             .get("level")
             .and_then(|v| v.as_str())
             .unwrap_or("info");
-        if matches!(level, "error" | "fatal") {
+        let kernel_component = entry
+            .get("tags")
+            .and_then(Value::as_object)
+            .and_then(|tags| tags.get("component"))
+            .and_then(Value::as_str)
+            .map(|component| component == "kernel")
+            .unwrap_or(false);
+        if matches!(level, "error" | "fatal") || kernel_component {
             let _ = writeln!(stderr(), "{}", serialized);
         } else {
             let _ = writeln!(stdout(), "{}", serialized);
@@ -69,6 +119,11 @@ fn emit_log(ctx: &mut Context, input: Value, kernel_tags: bool) -> Result<Value>
         .ok_or_else(|| anyhow!("log payload missing 'level'"))?;
     if !ALLOWED_LEVELS.contains(&level.as_str()) {
         return Err(anyhow!("unsupported log level: {level}"));
+    }
+
+    let allow_low_level = has_custom_binding(ctx);
+    if level_rank(&level) < log_threshold() && !allow_low_level {
+        return Ok(Value::Null);
     }
 
     let message = payload

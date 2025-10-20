@@ -3,13 +3,14 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Map, Number, Value};
 
 use crate::registry::{Context, Registry, SlotExecutor};
-use crate::tooling::register_tooling;
+use crate::tooling::{log_kernel_error, log_kernel_info, register_tooling};
 
 const SPREAD_KEY: &str = "__lcod_spreads__";
 const OPTIONAL_FLAG: &str = "__lcod_optional__";
@@ -664,13 +665,138 @@ fn apply_outputs(state: &mut Map<String, Value>, mappings: &Map<String, Value>, 
     }
 }
 
+fn compose_step_tags(step: &Step) -> Value {
+    let mut tags = Map::new();
+    tags.insert(
+        "logger".to_string(),
+        Value::String("kernel.compose.step".to_string()),
+    );
+    tags.insert("componentId".to_string(), Value::String(step.call.clone()));
+    Value::Object(tags)
+}
+
+fn compose_step_start_data(
+    index: usize,
+    collect_path: Option<&String>,
+    input_keys: Option<&Vec<String>>,
+    slot_keys: Option<&Vec<String>>,
+    has_children: bool,
+) -> Value {
+    let mut data = Map::new();
+    data.insert("phase".to_string(), Value::String("start".to_string()));
+    data.insert(
+        "stepIndex".to_string(),
+        Value::Number(Number::from(index as u64)),
+    );
+    if let Some(path) = collect_path {
+        data.insert("collectPath".to_string(), Value::String(path.clone()));
+    }
+    if let Some(keys) = input_keys {
+        if !keys.is_empty() {
+            data.insert(
+                "inputKeys".to_string(),
+                Value::Array(keys.iter().cloned().map(Value::String).collect()),
+            );
+        }
+    }
+    if let Some(keys) = slot_keys {
+        if !keys.is_empty() {
+            data.insert(
+                "slotKeys".to_string(),
+                Value::Array(keys.iter().cloned().map(Value::String).collect()),
+            );
+        }
+    }
+    if has_children {
+        data.insert("hasChildren".to_string(), Value::Bool(true));
+    }
+    Value::Object(data)
+}
+
+fn value_type_label(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn compose_step_success_data(index: usize, duration_ms: f64, output: &Value) -> Value {
+    let mut data = Map::new();
+    data.insert("phase".to_string(), Value::String("success".to_string()));
+    data.insert(
+        "stepIndex".to_string(),
+        Value::Number(Number::from(index as u64)),
+    );
+    if let Some(number) = Number::from_f64(duration_ms) {
+        data.insert("durationMs".to_string(), Value::Number(number));
+    }
+    data.insert(
+        "resultType".to_string(),
+        Value::String(value_type_label(output).to_string()),
+    );
+    match output {
+        Value::Object(map) => {
+            if !map.is_empty() {
+                let keys = map
+                    .keys()
+                    .cloned()
+                    .map(Value::String)
+                    .collect::<Vec<Value>>();
+                data.insert("resultKeys".to_string(), Value::Array(keys));
+            }
+        }
+        Value::Array(items) => {
+            data.insert(
+                "resultLength".to_string(),
+                Value::Number(Number::from(items.len() as u64)),
+            );
+        }
+        _ => {}
+    }
+    Value::Object(data)
+}
+
+fn compose_step_error_data(index: usize, duration_ms: f64, err: &anyhow::Error) -> Value {
+    let mut data = Map::new();
+    data.insert("phase".to_string(), Value::String("error".to_string()));
+    data.insert(
+        "stepIndex".to_string(),
+        Value::Number(Number::from(index as u64)),
+    );
+    if let Some(number) = Number::from_f64(duration_ms) {
+        data.insert("durationMs".to_string(), Value::Number(number));
+    }
+
+    let mut error_map = Map::new();
+    error_map.insert("message".to_string(), Value::String(err.to_string()));
+    if let Some(root) = err.source() {
+        error_map.insert("rootCause".to_string(), Value::String(root.to_string()));
+    }
+    data.insert("error".to_string(), Value::Object(error_map));
+    Value::Object(data)
+}
+
+fn log_step_info(ctx: &mut Context, step: &Step, payload: Value) {
+    let tags = compose_step_tags(step);
+    let _ = log_kernel_info(Some(ctx), "compose.step", Some(payload), Some(tags));
+}
+
+fn log_step_error(ctx: &mut Context, step: &Step, payload: Value) {
+    let tags = compose_step_tags(step);
+    let _ = log_kernel_error(Some(ctx), "compose.step", Some(payload), Some(tags));
+}
+
 fn run_steps(
     ctx: &mut Context,
     steps: &[Step],
     mut state: Map<String, Value>,
     slot: &Map<String, Value>,
 ) -> Result<Map<String, Value>> {
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
         if step.call == "lcod://tooling/script@1" {
             // no-op: retained escalation point for future diagnostics
         }
@@ -682,14 +808,67 @@ fn run_steps(
             Box::new(ComposeSlotHandler::new(step.children.as_ref(), &state));
         let previous = ctx.replace_run_slot_handler(Some(slot_handler));
 
+        let input_keys = match &input_value {
+            Value::Object(map) => {
+                let keys = map.keys().cloned().collect::<Vec<String>>();
+                if keys.is_empty() {
+                    None
+                } else {
+                    Some(keys)
+                }
+            }
+            _ => None,
+        };
+        let slot_keys = if slot.is_empty() {
+            None
+        } else {
+            let keys = slot.keys().cloned().collect::<Vec<String>>();
+            if keys.is_empty() {
+                None
+            } else {
+                Some(keys)
+            }
+        };
+        let has_children = match &step.children {
+            Some(StepChildren::List(list)) => !list.is_empty(),
+            Some(StepChildren::Map(map)) => map.values().any(|steps| !steps.is_empty()),
+            None => false,
+        };
+        log_step_info(
+            ctx,
+            step,
+            compose_step_start_data(
+                index,
+                step.collect_path.as_ref(),
+                input_keys.as_ref(),
+                slot_keys.as_ref(),
+                has_children,
+            ),
+        );
+        let started_at = Instant::now();
+
         ctx.push_scope();
         let result = ctx.call(&step.call, input_value, meta);
         ctx.pop_scope();
 
         ctx.replace_run_slot_handler(previous);
 
-        let output = result?;
-        apply_outputs(&mut state, &step.out, &output);
+        let duration_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+
+        match result {
+            Ok(output) => {
+                apply_outputs(&mut state, &step.out, &output);
+                log_step_info(
+                    ctx,
+                    step,
+                    compose_step_success_data(index, duration_ms, &output),
+                );
+            }
+            Err(err) => {
+                log_step_error(ctx, step, compose_step_error_data(index, duration_ms, &err));
+                return Err(err);
+            }
+        }
     }
 
     Ok(state)

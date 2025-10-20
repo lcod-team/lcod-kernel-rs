@@ -32,6 +32,10 @@ Next:
 ## M4 — Observability & logging
 - [x] Integrate `lcod://tooling/log@1` once defined in the spec (structured log serialization + host bridges).
 - [x] tooling/script: forward `console.*` calls to the logging contract so script logs flow through `tooling/log@1`.
+- [x] `lcod-run` CLI exposes its version (`--version`) and surfaces the flag in `--help`; bundle metadata follow-up tracked separately.
+- [ ] Add hierarchical log level configuration (`--log kernel=info,resolver=debug`) with sane defaults for CI.
+- [x] Instrument compose execution in the kernel (`run_steps`) to emit step/slot lifecycle logs (info/debug/trace) — parity across Rust & JS kernels.
+- [ ] Provide a lint entry point that resolves composes, enumerates logger usage, and validates against `lcp.toml[logging]` metadata (align with spec M4-05).
 - [ ] Expose a trace mode (`--trace`) in `run_compose` to inspect scope/slot mutations.
 
 ## M5 — Packaging & distribution
