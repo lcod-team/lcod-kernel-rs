@@ -1,5 +1,9 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::fmt;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
@@ -16,6 +20,17 @@ pub trait SlotExecutor {
         slot_vars: Value,
     ) -> Result<Value>;
 }
+
+#[derive(Debug)]
+pub struct CancelledError;
+
+impl fmt::Display for CancelledError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "execution cancelled")
+    }
+}
+
+impl std::error::Error for CancelledError {}
 
 struct RegistryInner {
     funcs: HashMap<String, Arc<dyn Func>>,
@@ -127,7 +142,11 @@ impl Registry {
     }
 
     pub fn context(&self) -> Context {
-        Context::new(self.inner.clone())
+        Context::new(self.inner.clone(), Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn context_with_cancellation(&self, token: Arc<AtomicBool>) -> Context {
+        Context::new(self.inner.clone(), token)
     }
 }
 
@@ -140,10 +159,11 @@ pub struct Context {
     registry_scope_stack: Vec<RegistrySnapshot>,
     log_tag_stack: Vec<Map<String, Value>>,
     spec_captured_logs: Vec<Value>,
+    cancellation: Arc<AtomicBool>,
 }
 
 impl Context {
-    fn new(registry: Arc<Mutex<RegistryInner>>) -> Self {
+    fn new(registry: Arc<Mutex<RegistryInner>>, cancellation: Arc<AtomicBool>) -> Self {
         Self {
             registry,
             scope_depth: 0,
@@ -153,10 +173,12 @@ impl Context {
             registry_scope_stack: Vec::new(),
             log_tag_stack: Vec::new(),
             spec_captured_logs: Vec::new(),
+            cancellation,
         }
     }
 
     pub fn call(&mut self, name: &str, input: Value, meta: Option<Value>) -> Result<Value> {
+        self.ensure_not_cancelled()?;
         let mut missing_contract_binding = false;
         let func = {
             let inner = self.registry.lock().expect("registry poisoned");
@@ -276,7 +298,7 @@ impl Context {
     }
 
     pub fn fork(&self) -> Context {
-        let mut cloned = Context::new(self.registry.clone());
+        let mut cloned = Context::new(self.registry.clone(), self.cancellation.clone());
         cloned.log_tag_stack = self.log_tag_stack.clone();
         cloned.spec_captured_logs = self.spec_captured_logs.clone();
         cloned
@@ -285,6 +307,30 @@ impl Context {
     pub fn registry_clone(&self) -> Registry {
         Registry {
             inner: self.registry.clone(),
+        }
+    }
+
+    pub fn cancellation_token(&self) -> Arc<AtomicBool> {
+        self.cancellation.clone()
+    }
+
+    pub fn set_cancellation_token(&mut self, token: Arc<AtomicBool>) {
+        self.cancellation = token;
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.load(Ordering::SeqCst)
+    }
+
+    pub fn ensure_not_cancelled(&self) -> Result<()> {
+        if self.is_cancelled() {
+            Err(CancelledError.into())
+        } else {
+            Ok(())
         }
     }
 

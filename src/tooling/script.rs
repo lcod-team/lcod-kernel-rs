@@ -177,6 +177,7 @@ fn execute_script(
     config: Arc<Value>,
     imports: Arc<HashMap<String, String>>,
 ) -> Result<Value> {
+    ctx.ensure_not_cancelled()?;
     let context = JsContext::new().map_err(|err| anyhow!("unable to create JS context: {err}"))?;
 
     let ctx_ptr_call = ctx as *mut Context as usize;

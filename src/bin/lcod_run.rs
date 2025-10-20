@@ -2,12 +2,17 @@ use std::env;
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use dirs::home_dir;
 use flate2::read::GzDecoder;
 use hex;
+use humantime::format_duration;
 use lcod_kernel_rs::compose::{parse_compose, run_compose, Step};
 use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
@@ -16,6 +21,7 @@ use lcod_kernel_rs::registry::Registry;
 use lcod_kernel_rs::tooling::{
     register_resolver_axioms, register_tooling, set_kernel_log_threshold,
 };
+use lcod_kernel_rs::CancelledError;
 use lcod_kernel_rs::Context as KernelContext;
 use serde_json::{json, Value};
 use serde_yaml;
@@ -116,6 +122,10 @@ struct CliOptions {
     /// Minimum kernel log level (trace|debug|info|warn|error|fatal)
     #[arg(long = "log-level", value_enum)]
     log_level: Option<LogLevel>,
+
+    /// Abort execution after the given duration (e.g. "30s", "2m")
+    #[arg(long = "timeout", value_parser = humantime::parse_duration, value_name = "DURATION")]
+    timeout: Option<Duration>,
 }
 
 fn main() {
@@ -136,6 +146,34 @@ fn main() {
 
 fn run() -> Result<()> {
     let opts = CliOptions::parse();
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    {
+        let flag = cancellation.clone();
+        ctrlc::set_handler(move || {
+            if !flag.swap(true, Ordering::SeqCst) {
+                eprintln!("Cancellation requested (Ctrl+C)");
+            }
+        })
+        .context("Failed to install Ctrl+C handler")?;
+    }
+
+    if let Some(timeout) = opts.timeout {
+        if timeout.is_zero() {
+            cancellation.store(true, Ordering::SeqCst);
+        } else {
+            let flag = cancellation.clone();
+            thread::spawn(move || {
+                thread::sleep(timeout);
+                if !flag.swap(true, Ordering::SeqCst) {
+                    eprintln!(
+                        "Execution timed out after {}",
+                        format_duration(timeout)
+                    );
+                }
+            });
+        }
+    }
 
     if let Some(level) = opts.log_level {
         env::set_var("LCOD_LOG_LEVEL", level.as_str());
@@ -193,7 +231,7 @@ fn run() -> Result<()> {
     let initial_state = load_input_state(opts.input)?;
     let compose_steps = load_compose(compose_path)?;
 
-    let mut ctx = registry.context();
+    let mut ctx = registry.context_with_cancellation(cancellation.clone());
 
     // ensure initial state is an object
     let state = match initial_state {
@@ -204,8 +242,14 @@ fn run() -> Result<()> {
         }
     };
 
-    let result =
-        run_compose(&mut ctx, &compose_steps, state).with_context(|| "Compose execution failed")?;
+    let result = match run_compose(&mut ctx, &compose_steps, state) {
+        Ok(value) => value,
+        Err(err) if err.is::<CancelledError>() => {
+            eprintln!("Execution cancelled");
+            std::process::exit(130);
+        }
+        Err(err) => return Err(err.context("Compose execution failed")),
+    };
 
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())

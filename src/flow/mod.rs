@@ -135,6 +135,7 @@ pub fn flow_foreach(ctx: &mut Context, input: Value, meta: Option<Value>) -> Res
     }
 
     for (index, item) in items.into_iter().enumerate() {
+        ctx.ensure_not_cancelled()?;
         let mut slot_vars = Map::new();
         slot_vars.insert("item".to_string(), item.clone());
         slot_vars.insert(

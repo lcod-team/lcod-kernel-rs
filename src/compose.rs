@@ -797,6 +797,7 @@ fn run_steps(
     slot: &Map<String, Value>,
 ) -> Result<Map<String, Value>> {
     for (index, step) in steps.iter().enumerate() {
+        ctx.ensure_not_cancelled()?;
         if step.call == "lcod://tooling/script@1" {
             // no-op: retained escalation point for future diagnostics
         }
