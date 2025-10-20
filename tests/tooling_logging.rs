@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use lcod_kernel_rs::compose::{parse_compose, run_compose};
 use lcod_kernel_rs::registry::{Context, Registry};
-use lcod_kernel_rs::tooling::register_tooling;
+use lcod_kernel_rs::tooling::{register_tooling, set_kernel_log_threshold};
 use serde_json::{json, Map, Value};
 
 const LOG_CONTRACT_ID: &str = "lcod://contract/tooling/log@1";
@@ -21,6 +21,8 @@ fn log_binding_reroutes_and_kernel_tags() -> Result<()> {
     let (registry, mut ctx) = setup();
     let captured: Arc<Mutex<Vec<Map<String, Value>>>> = Arc::new(Mutex::new(Vec::new()));
     let capture_clone = captured.clone();
+
+    set_kernel_log_threshold("trace");
 
     registry.register(
         "lcod://impl/testing/logger@1",
@@ -46,6 +48,8 @@ fn log_binding_reroutes_and_kernel_tags() -> Result<()> {
         "message": "kernel log"
     });
     registry.call(&mut ctx, KERNEL_HELPER_ID, kernel_payload, None)?;
+
+    set_kernel_log_threshold("fatal");
 
     let captured = captured.lock().unwrap();
     assert_eq!(captured.len(), 2);

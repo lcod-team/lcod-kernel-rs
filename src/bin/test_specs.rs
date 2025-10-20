@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use lcod_kernel_rs::compose::parse_compose;
-use lcod_kernel_rs::tooling::set_kernel_log_threshold;
 use lcod_kernel_rs::{
     register_core, register_demo_impls, register_flow, register_tooling, run_compose,
     Context as KernelContext, Registry,
@@ -61,8 +60,7 @@ fn run_test(name: &str, compose_path: &Path) -> Result<TestOutcome> {
     env::set_current_dir(compose_dir)?;
     let previous_log_level = env::var("LCOD_LOG_LEVEL").ok();
     if name == "tooling_log" {
-        env::set_var("LCOD_LOG_LEVEL", "trace");
-        set_kernel_log_threshold("trace");
+        env::set_var("LCOD_LOG_LEVEL", "info");
     }
     let compose = load_compose(&compose_path)?;
 
@@ -76,14 +74,8 @@ fn run_test(name: &str, compose_path: &Path) -> Result<TestOutcome> {
     let result = run_compose(&mut ctx, &compose, Value::Object(Default::default()));
     env::set_current_dir(original)?;
     match previous_log_level {
-        Some(value) => {
-            env::set_var("LCOD_LOG_LEVEL", &value);
-            set_kernel_log_threshold(&value);
-        }
-        None => {
-            env::remove_var("LCOD_LOG_LEVEL");
-            set_kernel_log_threshold("fatal");
-        }
+        Some(value) => env::set_var("LCOD_LOG_LEVEL", value),
+        None => env::remove_var("LCOD_LOG_LEVEL"),
     }
     let result = result?;
 
