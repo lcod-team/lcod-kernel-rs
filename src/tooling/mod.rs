@@ -919,11 +919,16 @@ fn queue_bfs_helper(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Re
             ));
         }
 
-        let slot_vars = json!({
-            "index": iterations,
-            "remaining": queue.len(),
-            "visitedCount": visited.len()
-        });
+        let mut slot_vars = serde_json::Map::new();
+        slot_vars.insert("index".to_string(), Value::from(iterations));
+        slot_vars.insert("remaining".to_string(), Value::from(queue.len()));
+        slot_vars.insert("visitedCount".to_string(), Value::from(visited.len()));
+        slot_vars.insert("item".to_string(), item.clone());
+        slot_vars.insert("state".to_string(), state.clone());
+        if let Some(ctx_val) = context_value.clone() {
+            slot_vars.insert("context".to_string(), ctx_val);
+        }
+        let slot_vars = Value::Object(slot_vars);
 
         let mut slot_payload = Map::new();
         slot_payload.insert("item".to_string(), item.clone());
