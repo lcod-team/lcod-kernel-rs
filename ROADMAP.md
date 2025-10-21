@@ -55,4 +55,5 @@ Next:
 ## M8 — Standard library primitives
 - [x] M8-02 Implement `core/object/merge@1`, `core/array/append@1`, `core/string/format@1`,
   and `core/json/{encode,decode}@1`; added unit coverage and spec fixture `std_primitives`.
-- [ ] M8-03 Wire the primitives into higher-level toolchains (resolver/registry) once the JS substrate is updated.
+- [x] M8-03 Register tooling/object clone/set/has, json.stable_stringify, hash.to_key, and queue.bfs as native helpers (#23).
+- [ ] M8-04 Wire the primitives into higher-level toolchains (resolver/registry) once the JS substrate is updated.

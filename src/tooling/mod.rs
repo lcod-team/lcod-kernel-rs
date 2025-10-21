@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use base64::Engine as _;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use toml::Value as TomlValue;
 
 use crate::compose::{parse_compose, run_compose};
@@ -30,7 +32,20 @@ pub fn register_tooling(registry: &Registry) {
     script::register_script_contract(registry);
     registry_scope::register_registry_scope(registry);
     logging::register_logging(registry);
+    register_std_helpers(registry);
     register_resolver_helpers(registry);
+}
+
+fn register_std_helpers(registry: &Registry) {
+    registry.register("lcod://tooling/object/clone@0.1.0", object_clone_helper);
+    registry.register("lcod://tooling/object/set@0.1.0", object_set_helper);
+    registry.register("lcod://tooling/object/has@0.1.0", object_has_helper);
+    registry.register(
+        "lcod://tooling/json/stable_stringify@0.1.0",
+        json_stable_stringify_helper,
+    );
+    registry.register("lcod://tooling/hash/to_key@0.1.0", hash_to_key_helper);
+    registry.register("lcod://tooling/queue/bfs@0.1.0", queue_bfs_helper);
 }
 
 fn runtime_root() -> Option<PathBuf> {
@@ -715,6 +730,276 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
     for (id, rel_path, base_path) in definitions {
         ensure_helper(id, rel_path, base_path);
     }
+}
+
+fn object_clone_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let clone_value = input
+        .get("value")
+        .and_then(|v| v.as_object())
+        .map(|map| Value::Object(map.clone()))
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    Ok(json!({ "clone": clone_value }))
+}
+
+fn object_set_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let mut target_map = input
+        .get("target")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let previous = Value::Object(target_map.clone());
+
+    let path = input
+        .get("path")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if path.is_empty() {
+        let replacement = input.get("value").cloned().unwrap_or(Value::Null);
+        return Ok(json!({ "object": replacement, "previous": previous }));
+    }
+
+    let mut current = &mut target_map;
+    for segment in path.iter().take(path.len().saturating_sub(1)) {
+        let Some(key) = segment.as_str().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let entry = current
+            .entry(key.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        current = entry.as_object_mut().expect("entry forced to object");
+    }
+
+    if let Some(last_key) = path
+        .last()
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        current.insert(
+            last_key.to_string(),
+            input.get("value").cloned().unwrap_or(Value::Null),
+        );
+    }
+
+    Ok(json!({
+        "object": Value::Object(target_map),
+        "previous": previous
+    }))
+}
+
+fn object_has_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let path = input
+        .get("path")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if path.is_empty() {
+        return Ok(json!({ "hasKey": false, "value": Value::Null }));
+    }
+
+    let mut value_ref: Option<Value> = None;
+    let mut current_obj_opt = input.get("target").and_then(Value::as_object).cloned();
+    for (idx, segment) in path.iter().enumerate() {
+        let Some(key) = segment.as_str().filter(|s| !s.is_empty()) else {
+            return Ok(json!({ "hasKey": false, "value": Value::Null }));
+        };
+        let Some(current_obj) = current_obj_opt.as_ref() else {
+            return Ok(json!({ "hasKey": false, "value": Value::Null }));
+        };
+        let Some(next_value) = current_obj.get(key) else {
+            return Ok(json!({ "hasKey": false, "value": Value::Null }));
+        };
+        if idx == path.len() - 1 {
+            value_ref = Some(next_value.clone());
+        } else {
+            current_obj_opt = next_value.as_object().cloned();
+        }
+    }
+
+    Ok(json!({
+        "hasKey": value_ref.is_some(),
+        "value": value_ref.unwrap_or(Value::Null)
+    }))
+}
+
+fn json_stable_stringify_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let value = input.get("value").cloned().unwrap_or(Value::Null);
+    match stable_stringify(&value) {
+        Ok(text) => Ok(json!({ "text": text, "warning": Value::Null })),
+        Err(err) => Ok(json!({ "text": Value::Null, "warning": err.to_string() })),
+    }
+}
+
+fn stable_stringify(value: &Value) -> Result<String> {
+    let canonical = canonicalize(value);
+    serde_json::to_string(&canonical).map_err(|err| anyhow!("unable to stringify value: {err}"))
+}
+
+fn canonicalize(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            let mut new_map = Map::new();
+            for (key, val) in entries {
+                new_map.insert(key.clone(), canonicalize(val));
+            }
+            Value::Object(new_map)
+        }
+        Value::Array(items) => {
+            let canonical_items: Vec<Value> = items.iter().map(canonicalize).collect();
+            Value::Array(canonical_items)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn hash_to_key_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let text = input.get("text").and_then(Value::as_str).unwrap_or("");
+    let prefix = input.get("prefix").and_then(Value::as_str).unwrap_or("");
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    let hash = base64::engine::general_purpose::STANDARD.encode(digest);
+    let key = if prefix.is_empty() {
+        hash
+    } else {
+        format!("{prefix}{hash}")
+    };
+    Ok(json!({ "key": key }))
+}
+
+fn queue_bfs_helper(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let mut queue: VecDeque<Value> = input
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let mut visited_object = input
+        .get("visited")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut visited: HashSet<String> = visited_object.keys().cloned().collect();
+
+    let mut state = input
+        .get("state")
+        .and_then(Value::as_object)
+        .cloned()
+        .map(Value::Object)
+        .unwrap_or_else(|| Value::Object(Map::new()));
+
+    let context_value = input.get("context").cloned();
+
+    let max_iterations = input
+        .get("maxIterations")
+        .and_then(Value::as_i64)
+        .filter(|v| *v > 0)
+        .unwrap_or(i64::MAX);
+
+    let mut iterations: i64 = 0;
+    let mut warnings: Vec<Value> = Vec::new();
+
+    while let Some(item) = queue.pop_front() {
+        let _ = ctx.ensure_not_cancelled();
+        if iterations >= max_iterations {
+            return Err(anyhow!(
+                "queue/bfs exceeded maxIterations ({max_iterations})"
+            ));
+        }
+
+        let slot_vars = json!({
+            "index": iterations,
+            "remaining": queue.len(),
+            "visitedCount": visited.len()
+        });
+
+        let mut slot_payload = Map::new();
+        slot_payload.insert("item".to_string(), item.clone());
+        slot_payload.insert("state".to_string(), state.clone());
+        if let Some(ctx_val) = context_value.clone() {
+            slot_payload.insert("context".to_string(), ctx_val);
+        }
+
+        let key_value = ctx.run_slot(
+            "key",
+            Some(Value::Object(slot_payload.clone())),
+            Some(slot_vars.clone()),
+        );
+
+        let mut key = match key_value {
+            Ok(val) => val.as_str().map(|s| s.to_string()),
+            Err(err) => {
+                warnings.push(Value::String(format!("queue/bfs key slot failed: {err}")));
+                None
+            }
+        };
+
+        if key.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+            match serde_json::to_string(&item) {
+                Ok(text) => key = Some(text),
+                Err(err) => {
+                    warnings.push(Value::String(format!(
+                        "queue/bfs fallback key serialization failed: {err}"
+                    )));
+                    key = Some(format!("item:{iterations}"));
+                }
+            }
+        }
+
+        let key_str = key.unwrap();
+        if visited.contains(&key_str) {
+            iterations += 1;
+            continue;
+        }
+        visited.insert(key_str.clone());
+        visited_object.insert(key_str, Value::Bool(true));
+
+        let process_input = Value::Object(slot_payload);
+        let process_result = ctx.run_slot(
+            "process",
+            Some(process_input),
+            Some(slot_vars),
+        )?;
+
+        if let Some(new_state) = process_result.get("state").and_then(Value::as_object) {
+            state = Value::Object(new_state.clone());
+        }
+
+        if let Some(children) = process_result.get("children").and_then(Value::as_array) {
+            for child in children {
+                queue.push_back(child.clone());
+            }
+        }
+
+        if let Some(extra_warnings) = process_result.get("warnings").and_then(Value::as_array) {
+            for warning in extra_warnings {
+                if let Some(text) = warning.as_str() {
+                    warnings.push(Value::String(text.to_string()));
+                }
+            }
+        }
+
+        iterations += 1;
+    }
+
+    Ok(json!({
+        "state": state,
+        "visited": Value::Object(visited_object),
+        "warnings": Value::Array(warnings),
+        "iterations": iterations
+    }))
 }
 
 fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDef> {
