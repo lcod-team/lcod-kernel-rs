@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -88,6 +89,7 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
     let imports = Arc::new(imports_map);
 
     let mut scope_map = Map::new();
+    scope_map.insert("bindings".to_string(), bindings.clone());
     scope_map.insert("input".to_string(), bindings);
     scope_map.insert("state".to_string(), initial_state);
     scope_map.insert("meta".to_string(), meta);
@@ -110,7 +112,25 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
     );
 
     match evaluation {
-        Ok(mut result) => {
+        Ok((mut result, mutated_state)) => {
+            if let Some(state_patch_map) =
+                mutated_state.and_then(|value| value.as_object().cloned())
+            {
+                let patch_value = Value::Object(state_patch_map.clone());
+                if let Some(result_map) = result.as_object_mut() {
+                    result_map.insert("__lcod_state_patch".to_string(), patch_value);
+                    if let Some(pointer_value) = result_map.get("pointer").cloned() {
+                        result_map
+                            .entry("currentPointer".to_string())
+                            .or_insert(pointer_value);
+                    }
+                } else {
+                    let mut wrapper = Map::new();
+                    wrapper.insert("__lcod_state_patch".to_string(), patch_value);
+                    wrapper.insert("__lcod_result".to_string(), result);
+                    result = Value::Object(wrapper);
+                }
+            }
             let logged_guard = messages.lock().unwrap();
             let logged = logged_guard.as_slice();
             if !logged.is_empty() {
@@ -176,11 +196,37 @@ fn execute_script(
     tools: Arc<HashMap<String, ToolDef>>,
     config: Arc<Value>,
     imports: Arc<HashMap<String, String>>,
-) -> Result<Value> {
+) -> Result<(Value, Option<Value>)> {
     ctx.ensure_not_cancelled()?;
     let context = JsContext::new().map_err(|err| anyhow!("unable to create JS context: {err}"))?;
 
     let ctx_ptr_call = ctx as *mut Context as usize;
+
+    let cwd = env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string());
+    let cwd_literal = serde_json::to_string(&cwd)?;
+    let env_map: HashMap<String, String> = env::vars().collect();
+    let env_literal = serde_json::to_string(&env_map)?;
+    context
+        .eval(&format!(
+            "
+            if (typeof globalThis.process === 'undefined') {{
+                globalThis.process = {{
+                    cwd: () => {cwd_literal},
+                    env: Object.freeze({env_literal})
+                }};
+            }} else {{
+                if (typeof globalThis.process.cwd !== 'function') {{
+                    globalThis.process.cwd = () => {cwd_literal};
+                }}
+                if (typeof globalThis.process.env === 'undefined') {{
+                    globalThis.process.env = Object.freeze({env_literal});
+                }}
+            }}
+        "
+        ))
+        .map_err(|err| anyhow!("failed to initialise process shim: {err}"))?;
 
     context
         .add_callback(
@@ -355,7 +401,7 @@ fn execute_script(
                     Arc::clone(&config_for_tools),
                     Arc::clone(&imports_for_tools),
                 )
-                .map(|value| json_to_js_value(&value))
+                .map(|(value, _)| json_to_js_value(&value))
                 .map_err(|err| err.to_string())
             },
         )
@@ -425,7 +471,7 @@ fn execute_script(
     );
     wrapper.push_str("  const userFn = (");
     wrapper.push_str(source);
-    wrapper.push_str(");\n  const result = userFn(arg0, api);\n  if (result && typeof result.then === 'function') {\n    return result.then(value => value);\n  }\n  return result;\n})();");
+    wrapper.push_str(");\n  const result = userFn(arg0, api);\n  if (result && typeof result.then === 'function') {\n    return result.then(value => { globalThis.__lcod_scope_snapshot = arg0; return value; });\n  }\n  globalThis.__lcod_scope_snapshot = arg0;\n  return result;\n})();");
 
     let start = Instant::now();
     let js_value = context
@@ -440,7 +486,16 @@ fn execute_script(
         ));
     }
 
-    Ok(js_value_to_json(js_value))
+    let result_json = js_value_to_json(js_value);
+    let snapshot_value = context
+        .eval("typeof globalThis.__lcod_scope_snapshot === 'undefined' ? null : globalThis.__lcod_scope_snapshot")
+        .unwrap_or(JsValue::Null);
+    let snapshot_json = js_value_to_json(snapshot_value);
+    let mutated_state = snapshot_json
+        .as_object()
+        .and_then(|map| map.get("state"))
+        .cloned();
+    Ok((result_json, mutated_state))
 }
 
 fn js_value_to_json(value: JsValue) -> Value {

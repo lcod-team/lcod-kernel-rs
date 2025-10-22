@@ -16,6 +16,7 @@ const SPREAD_KEY: &str = "__lcod_spreads__";
 const OPTIONAL_FLAG: &str = "__lcod_optional__";
 const STATE_SENTINEL: &str = "__lcod_state__";
 const RESULT_SENTINEL: &str = "__lcod_result__";
+const SCRIPT_CONTRACT_ID: &str = "lcod://tooling/script@1";
 
 #[derive(Copy, Clone)]
 enum MappingKind {
@@ -887,7 +888,7 @@ fn run_steps(
 ) -> Result<Map<String, Value>> {
     for (index, step) in steps.iter().enumerate() {
         ctx.ensure_not_cancelled()?;
-        if step.call == "lcod://tooling/script@1" {
+        if step.call == SCRIPT_CONTRACT_ID {
             // no-op: retained escalation point for future diagnostics
         }
         let input_map = build_input(step, &state, slot);
@@ -943,7 +944,25 @@ fn run_steps(
         let duration_ms = started_at.elapsed().as_secs_f64() * 1000.0;
 
         match result {
-            Ok(output) => {
+            Ok(mut output) => {
+                if step.call == SCRIPT_CONTRACT_ID {
+                    let mut unwrapped_result: Option<Value> = None;
+                    if let Some(map) = output.as_object_mut() {
+                        if let Some(patch_value) = map.remove("__lcod_state_patch") {
+                            if let Value::Object(patch_map) = patch_value {
+                                for (key, value) in patch_map {
+                                    state.insert(key, value);
+                                }
+                            }
+                        }
+                        if let Some(result_value) = map.remove("__lcod_result") {
+                            unwrapped_result = Some(result_value);
+                        }
+                    }
+                    if let Some(result_value) = unwrapped_result {
+                        output = result_value;
+                    }
+                }
                 apply_outputs(&mut state, &step.out, &output);
                 log_step_info(
                     ctx,
