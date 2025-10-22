@@ -110,7 +110,7 @@ fn foreach_collects_body_output() -> Result<()> {
         inputs,
         out: out_map,
         collect_path: Some("$.val".to_string()),
-        children: Some(StepChildren::Map(children_map.clone())),
+        children: None,
         slots: Some(StepChildren::Map(children_map)),
     };
 
@@ -150,7 +150,7 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         inputs: cond_inputs,
         out: Map::new(),
         collect_path: None,
-        children: Some(StepChildren::Map(then_map.clone())),
+        children: None,
         slots: Some(StepChildren::Map(then_map)),
     });
 
@@ -172,7 +172,7 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         inputs: cond_inputs,
         out: Map::new(),
         collect_path: None,
-        children: Some(StepChildren::Map(then_map.clone())),
+        children: None,
         slots: Some(StepChildren::Map(then_map)),
     });
 
@@ -196,7 +196,7 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         inputs: foreach_inputs,
         out: foreach_out,
         collect_path: Some("$.val".to_string()),
-        children: Some(StepChildren::Map(children_map.clone())),
+        children: None,
         slots: Some(StepChildren::Map(children_map)),
     };
 
@@ -242,7 +242,7 @@ fn foreach_executes_else_slot() -> Result<()> {
         inputs,
         out: out_map,
         collect_path: Some("$.val".to_string()),
-        children: Some(StepChildren::Map(children_map.clone())),
+        children: None,
         slots: Some(StepChildren::Map(children_map)),
     };
 

@@ -605,6 +605,7 @@ fn merge_step_children(
 ) {
     match source {
         StepChildren::List(list) => {
+            // TODO(M7-00): drop the legacy `children` alias once all composes target explicit slots.
             if overwrite || !target.contains_key("children") {
                 target.insert("children".to_string(), list.clone());
             }
@@ -631,6 +632,7 @@ fn normalize_children(
         merge_step_children(&mut map, slot_map, true);
     }
     if !map.contains_key("children") {
+        // TODO(M7-00): remove this fallback once the legacy alias is retired downstream.
         if let Some(body) = map.get("body").cloned() {
             map.insert("children".to_string(), body);
         }
