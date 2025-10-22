@@ -972,11 +972,7 @@ fn queue_bfs_helper(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Re
         visited_object.insert(key_str, Value::Bool(true));
 
         let process_input = Value::Object(slot_payload);
-        let process_result = ctx.run_slot(
-            "process",
-            Some(process_input),
-            Some(slot_vars),
-        )?;
+        let process_result = ctx.run_slot("process", Some(process_input), Some(slot_vars))?;
 
         if let Some(new_state) = process_result.get("state").and_then(Value::as_object) {
             state = Value::Object(new_state.clone());
@@ -1325,8 +1321,11 @@ fn canonicalize_object(map: &mut Map<String, Value>, context: &HelperContext) {
     if let Some(children) = map.get_mut("children") {
         canonicalize_children(children, context);
     }
+    if let Some(slots) = map.get_mut("slots") {
+        canonicalize_children(slots, context);
+    }
     for (key, val) in map.iter_mut() {
-        if key == "call" || key == "children" {
+        if key == "call" || key == "children" || key == "slots" {
             continue;
         }
         canonicalize_value(val, context);

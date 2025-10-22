@@ -19,6 +19,7 @@ fn run_demo_compose() -> Result<()> {
             out: step1_out,
             collect_path: None,
             children: None,
+            slots: None,
         });
 
         let mut step2_in = Map::new();
@@ -31,6 +32,7 @@ fn run_demo_compose() -> Result<()> {
             out: step2_out,
             collect_path: None,
             children: None,
+            slots: None,
         });
 
         let mut step3_in = Map::new();
@@ -43,6 +45,7 @@ fn run_demo_compose() -> Result<()> {
             out: step3_out,
             collect_path: None,
             children: None,
+            slots: None,
         });
 
         steps

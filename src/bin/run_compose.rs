@@ -242,6 +242,9 @@ fn canonicalize_object_mut(map: &mut Map<String, Value>, context: &ComposeContex
     if let Some(children) = map.get_mut("children") {
         canonicalize_children_mut(children, context);
     }
+    if let Some(slots) = map.get_mut("slots") {
+        canonicalize_children_mut(slots, context);
+    }
     if let Some(value) = map.get_mut("in") {
         canonicalize_value_mut(value, context);
     }
@@ -252,7 +255,13 @@ fn canonicalize_object_mut(map: &mut Map<String, Value>, context: &ComposeContex
         canonicalize_value_mut(value, context);
     }
     for (key, val) in map.iter_mut() {
-        if key == "call" || key == "children" || key == "in" || key == "out" || key == "bindings" {
+        if key == "call"
+            || key == "children"
+            || key == "slots"
+            || key == "in"
+            || key == "out"
+            || key == "bindings"
+        {
             continue;
         }
         canonicalize_value_mut(val, context);

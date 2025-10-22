@@ -81,6 +81,7 @@ fn simple_step(call: &str, inputs: Map<String, Value>, out: Map<String, Value>) 
         out,
         collect_path: None,
         children: None,
+        slots: None,
     }
 }
 
@@ -109,7 +110,8 @@ fn foreach_collects_body_output() -> Result<()> {
         inputs,
         out: out_map,
         collect_path: Some("$.val".to_string()),
-        children: Some(StepChildren::Map(children_map)),
+        children: Some(StepChildren::Map(children_map.clone())),
+        slots: Some(StepChildren::Map(children_map)),
     };
 
     let result = run_compose(&mut ctx, &[step], Value::Object(Map::new()))?;
@@ -148,7 +150,8 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         inputs: cond_inputs,
         out: Map::new(),
         collect_path: None,
-        children: Some(StepChildren::Map(then_map)),
+        children: Some(StepChildren::Map(then_map.clone())),
+        slots: Some(StepChildren::Map(then_map)),
     });
 
     // greater than limit -> break
@@ -169,7 +172,8 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         inputs: cond_inputs,
         out: Map::new(),
         collect_path: None,
-        children: Some(StepChildren::Map(then_map)),
+        children: Some(StepChildren::Map(then_map.clone())),
+        slots: Some(StepChildren::Map(then_map)),
     });
 
     let mut echo_inputs = Map::new();
@@ -192,7 +196,8 @@ fn foreach_handles_continue_and_break() -> Result<()> {
         inputs: foreach_inputs,
         out: foreach_out,
         collect_path: Some("$.val".to_string()),
-        children: Some(StepChildren::Map(children_map)),
+        children: Some(StepChildren::Map(children_map.clone())),
+        slots: Some(StepChildren::Map(children_map)),
     };
 
     let result = run_compose(&mut ctx, &[foreach_step], Value::Object(Map::new()))?;
@@ -237,7 +242,8 @@ fn foreach_executes_else_slot() -> Result<()> {
         inputs,
         out: out_map,
         collect_path: Some("$.val".to_string()),
-        children: Some(StepChildren::Map(children_map)),
+        children: Some(StepChildren::Map(children_map.clone())),
+        slots: Some(StepChildren::Map(children_map)),
     };
 
     let initial_state = json!({ "numbers": [] });

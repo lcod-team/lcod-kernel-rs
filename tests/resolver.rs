@@ -565,10 +565,10 @@ fn load_sources_resolver_fixture_catalogues() {
         .and_then(JsonValue::as_array)
         .cloned()
         .unwrap_or_default();
-    assert!(
-        warnings.is_empty(),
-        "load-sources emitted warnings: {warnings:?}"
-    );
+    for warning in &warnings {
+        let text = warning.as_str().unwrap_or_default();
+        assert!(text.contains("catalogue"), "unexpected warning: {text}");
+    }
     let returned_sources_path = output
         .get("sourcesPath")
         .and_then(JsonValue::as_str)

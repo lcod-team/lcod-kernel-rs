@@ -34,6 +34,8 @@ pub struct Step {
     pub collect_path: Option<String>,
     #[serde(default)]
     pub children: Option<StepChildren>,
+    #[serde(default)]
+    pub slots: Option<StepChildren>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -71,6 +73,23 @@ fn merge_step_with_fallback(normalized: &mut Step, fallback: &Step) {
     merge_map_with_fallback(&mut normalized.out, &fallback.out);
 
     match (&mut normalized.children, &fallback.children) {
+        (Some(StepChildren::List(target_steps)), Some(StepChildren::List(source_steps))) => {
+            for (target, source) in target_steps.iter_mut().zip(source_steps.iter()) {
+                merge_step_with_fallback(target, source);
+            }
+        }
+        (Some(StepChildren::Map(target_map)), Some(StepChildren::Map(source_map))) => {
+            for (slot, target_steps) in target_map.iter_mut() {
+                if let Some(source_steps) = source_map.get(slot) {
+                    for (target, source) in target_steps.iter_mut().zip(source_steps.iter()) {
+                        merge_step_with_fallback(target, source);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    match (&mut normalized.slots, &fallback.slots) {
         (Some(StepChildren::List(target_steps)), Some(StepChildren::List(source_steps))) => {
             for (target, source) in target_steps.iter_mut().zip(source_steps.iter()) {
                 merge_step_with_fallback(target, source);
@@ -384,6 +403,19 @@ fn normalize_step(mut step: Step) -> Step {
         });
     }
 
+    if let Some(slots) = step.slots.take() {
+        step.slots = Some(match slots {
+            StepChildren::List(list) => {
+                StepChildren::List(list.into_iter().map(normalize_step).collect())
+            }
+            StepChildren::Map(map) => StepChildren::Map(
+                map.into_iter()
+                    .map(|(slot, steps)| (slot, steps.into_iter().map(normalize_step).collect()))
+                    .collect(),
+            ),
+        });
+    }
+
     step
 }
 
@@ -530,11 +562,28 @@ fn value_to_object(value: Value) -> Map<String, Value> {
     }
 }
 
-fn build_meta(step: &Step, slot: &Map<String, Value>) -> Option<Value> {
+fn build_meta(
+    step: &Step,
+    slot: &Map<String, Value>,
+    slots_map: &HashMap<String, Vec<Step>>,
+) -> Option<Value> {
     let mut meta = Map::new();
-    if let Some(children) = &step.children {
-        if let Ok(serialized) = serde_json::to_value(children) {
-            meta.insert("children".to_string(), serialized);
+    let serialized_slots = serde_json::to_value(slots_map).ok();
+    if let Some(value) = step
+        .children
+        .as_ref()
+        .or(step.slots.as_ref())
+        .and_then(|children| serde_json::to_value(children).ok())
+    {
+        meta.insert("children".to_string(), value);
+    } else if let Some(value) = serialized_slots.clone() {
+        if !value.is_null() {
+            meta.insert("children".to_string(), value.clone());
+        }
+    }
+    if let Some(value) = serialized_slots {
+        if !value.is_null() {
+            meta.insert("slots".to_string(), value);
         }
     }
     if let Some(path) = &step.collect_path {
@@ -548,16 +597,44 @@ fn build_meta(step: &Step, slot: &Map<String, Value>) -> Option<Value> {
     }
 }
 
-fn normalize_children(children: Option<&StepChildren>) -> HashMap<String, Vec<Step>> {
-    match children {
-        Some(StepChildren::List(list)) => {
-            let mut map = HashMap::new();
-            map.insert("children".to_string(), list.clone());
-            map
+fn merge_step_children(
+    target: &mut HashMap<String, Vec<Step>>,
+    source: &StepChildren,
+    overwrite: bool,
+) {
+    match source {
+        StepChildren::List(list) => {
+            if overwrite || !target.contains_key("children") {
+                target.insert("children".to_string(), list.clone());
+            }
         }
-        Some(StepChildren::Map(map)) => map.clone(),
-        None => HashMap::new(),
+        StepChildren::Map(map) => {
+            for (key, steps) in map {
+                if overwrite || !target.contains_key(key) {
+                    target.insert(key.clone(), steps.clone());
+                }
+            }
+        }
     }
+}
+
+fn normalize_children(
+    children: Option<&StepChildren>,
+    slots: Option<&StepChildren>,
+) -> HashMap<String, Vec<Step>> {
+    let mut map = HashMap::new();
+    if let Some(child) = children {
+        merge_step_children(&mut map, child, false);
+    }
+    if let Some(slot_map) = slots {
+        merge_step_children(&mut map, slot_map, true);
+    }
+    if !map.contains_key("children") {
+        if let Some(body) = map.get("body").cloned() {
+            map.insert("children".to_string(), body);
+        }
+    }
+    map
 }
 
 struct ComposeSlotHandler {
@@ -566,9 +643,9 @@ struct ComposeSlotHandler {
 }
 
 impl ComposeSlotHandler {
-    fn new(children: Option<&StepChildren>, parent_state: &Map<String, Value>) -> Self {
+    fn new(slots: HashMap<String, Vec<Step>>, parent_state: &Map<String, Value>) -> Self {
         Self {
-            slots: normalize_children(children),
+            slots,
             parent_state: parent_state.clone(),
         }
     }
@@ -588,7 +665,19 @@ impl SlotExecutor for ComposeSlotHandler {
             value_to_object(local_state)
         };
         let slot_map = value_to_object(slot_vars);
-        let steps_opt = self.slots.get(name).or_else(|| self.slots.get("children"));
+        let steps_opt = self
+            .slots
+            .get(name)
+            .or_else(|| {
+                if name == "children" {
+                    self.slots.get("body")
+                } else if name == "body" {
+                    self.slots.get("children")
+                } else {
+                    None
+                }
+            })
+            .or_else(|| self.slots.get("children"));
         let Some(steps) = steps_opt else {
             return Ok(Value::Object(local_map));
         };
@@ -803,10 +892,11 @@ fn run_steps(
         }
         let input_map = build_input(step, &state, slot);
         let input_value = Value::Object(input_map);
-        let meta = build_meta(step, slot);
+        let slot_map = normalize_children(step.children.as_ref(), step.slots.as_ref());
+        let meta = build_meta(step, slot, &slot_map);
 
         let slot_handler: Box<dyn SlotExecutor + 'static> =
-            Box::new(ComposeSlotHandler::new(step.children.as_ref(), &state));
+            Box::new(ComposeSlotHandler::new(slot_map.clone(), &state));
         let previous = ctx.replace_run_slot_handler(Some(slot_handler));
 
         let input_keys = match &input_value {
@@ -830,11 +920,7 @@ fn run_steps(
                 Some(keys)
             }
         };
-        let has_children = match &step.children {
-            Some(StepChildren::List(list)) => !list.is_empty(),
-            Some(StepChildren::Map(map)) => map.values().any(|steps| !steps.is_empty()),
-            None => false,
-        };
+        let has_children = slot_map.values().any(|steps| !steps.is_empty());
         log_step_info(
             ctx,
             step,
