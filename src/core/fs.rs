@@ -11,13 +11,19 @@ use serde_json::{json, Map, Value};
 use crate::registry::{Context, Registry};
 
 const CONTRACT_READ: &str = "lcod://contract/core/fs/read-file@1";
+const CONTRACT_READ_ALT: &str = "lcod://contract/core/fs/read_file@1";
 const CONTRACT_WRITE: &str = "lcod://contract/core/fs/write-file@1";
+const CONTRACT_WRITE_ALT: &str = "lcod://contract/core/fs/write_file@1";
 const CONTRACT_LIST: &str = "lcod://contract/core/fs/list-dir@1";
+const CONTRACT_LIST_ALT: &str = "lcod://contract/core/fs/list_dir@1";
 
 pub fn register_fs(registry: &Registry) {
     registry.register(CONTRACT_READ, read_file_contract);
+    registry.register(CONTRACT_READ_ALT, read_file_contract);
     registry.register(CONTRACT_WRITE, write_file_contract);
+    registry.register(CONTRACT_WRITE_ALT, write_file_contract);
     registry.register(CONTRACT_LIST, list_dir_contract);
+    registry.register(CONTRACT_LIST_ALT, list_dir_contract);
 }
 
 fn value_as_str<'a>(value: &'a Value, key: &'static str) -> Result<&'a str> {
