@@ -337,7 +337,6 @@ struct ResolverHelperDef {
 #[derive(Debug)]
 enum CandidateKind {
     Root,
-    Components,
     Legacy,
 }
 
@@ -383,7 +382,7 @@ fn gather_candidates() -> Vec<Candidate> {
         push(CandidateKind::Legacy, tooling_registry, &mut out);
     }
     if let Ok(path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
-        push(CandidateKind::Components, PathBuf::from(path), &mut out);
+        push(CandidateKind::Legacy, PathBuf::from(path), &mut out);
     }
     if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
         push(CandidateKind::Root, PathBuf::from(path), &mut out);
@@ -414,27 +413,10 @@ fn gather_candidates() -> Vec<Candidate> {
         .canonicalize()
         .ok()
     {
-        push(
-            CandidateKind::Components,
-            local_components.clone(),
-            &mut out,
-        );
-        push(
-            CandidateKind::Components,
-            local_components
-                .join("packages")
-                .join("std")
-                .join("components"),
-            &mut out,
-        );
+        push(CandidateKind::Root, local_components, &mut out);
     } else if let Ok(path) = env::var("LCOD_COMPONENTS_PATH") {
         let base = PathBuf::from(path);
-        push(CandidateKind::Components, base.clone(), &mut out);
-        push(
-            CandidateKind::Components,
-            base.join("packages").join("std").join("components"),
-            &mut out,
-        );
+        push(CandidateKind::Root, base, &mut out);
     }
     out
 }
@@ -1013,7 +995,6 @@ fn load_definitions_for_candidate(candidate: &Candidate) -> Vec<ResolverHelperDe
                 load_legacy_component_definitions(&candidate.path.join("components"))
             }
         }
-        CandidateKind::Components => load_legacy_component_definitions(&candidate.path),
         CandidateKind::Legacy => load_legacy_component_definitions(&candidate.path),
     }
 }
@@ -1098,63 +1079,153 @@ fn load_package_definitions(
         }
     };
     let context = create_context(&manifest, workspace_aliases);
-    let components = manifest
+    let mut defs = Vec::new();
+    let components_dir = manifest
         .get("workspace")
         .and_then(TomlValue::as_table)
-        .and_then(|w| w.get("components"))
-        .and_then(TomlValue::as_array);
+        .and_then(|w| w.get("componentsDir"))
+        .and_then(TomlValue::as_str)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    if let Some(dir) = components_dir {
+        defs.extend(load_package_components_from_dir(&pkg_dir, &dir, &context));
+    } else {
+        let _ = log_kernel_warn(
+            None,
+            "workspace.componentsDir is missing",
+            Some(json!({
+                "path": manifest_path.display().to_string(),
+                "hint": "set workspace.componentsDir = \"components\""
+            })),
+            Some(json!({ "module": "resolver-helpers" })),
+        );
+    }
+    defs
+}
+
+fn load_package_components_from_dir(
+    pkg_dir: &Path,
+    components_dir: &str,
+    context: &HelperContext,
+) -> Vec<ResolverHelperDef> {
+    let resolved_dir = if Path::new(components_dir).is_absolute() {
+        PathBuf::from(components_dir)
+    } else {
+        pkg_dir.join(components_dir)
+    };
+    if !resolved_dir.exists() {
+        let _ = log_kernel_warn(
+            None,
+            "workspace.componentsDir does not exist",
+            Some(json!({
+                "path": resolved_dir.display().to_string()
+            })),
+            Some(json!({ "module": "resolver-helpers" })),
+        );
+        return Vec::new();
+    }
+
+    let component_dirs = collect_component_directories(&resolved_dir);
     let mut defs = Vec::new();
-    if let Some(components) = components {
-        for component in components {
-            if let Some(table) = component.as_table() {
-                let Some(id_raw) = table.get("id").and_then(TomlValue::as_str) else {
-                    continue;
-                };
-                let Some(rel_path) = table.get("path").and_then(TomlValue::as_str) else {
-                    continue;
-                };
-                let component_dir = pkg_dir.join(rel_path);
-                let compose_path = component_dir.join("compose.yaml");
-                if !compose_path.exists() {
-                    continue;
+    for component_dir in component_dirs {
+        let compose_path = component_dir.join("compose.yaml");
+        if !compose_path.exists() {
+            continue;
+        }
+        let manifest_path = component_dir.join("lcp.toml");
+        let Ok(raw) = fs::read_to_string(&manifest_path) else {
+            let _ = log_kernel_warn(
+                None,
+                "Failed to read component manifest",
+                Some(json!({
+                    "path": manifest_path.display().to_string()
+                })),
+                Some(json!({ "module": "resolver-helpers" })),
+            );
+            continue;
+        };
+        let manifest: TomlValue = match raw.parse::<TomlValue>() {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = log_kernel_warn(
+                    None,
+                    "Failed to parse component manifest",
+                    Some(json!({
+                        "path": manifest_path.display().to_string(),
+                        "error": err.to_string()
+                    })),
+                    Some(json!({ "module": "resolver-helpers" })),
+                );
+                continue;
+            }
+        };
+        let Some(component_id_raw) = manifest.get("id").and_then(TomlValue::as_str) else {
+            let _ = log_kernel_warn(
+                None,
+                "Component manifest is missing id",
+                Some(json!({
+                    "path": manifest_path.display().to_string()
+                })),
+                Some(json!({ "module": "resolver-helpers" })),
+            );
+            continue;
+        };
+        let canonical_id = canonicalize_id(component_id_raw, context);
+        let mut aliases = Vec::new();
+        if canonical_id != component_id_raw {
+            aliases.push(component_id_raw.to_string());
+        }
+        defs.push(ResolverHelperDef {
+            id: canonical_id,
+            compose_path: compose_path.clone(),
+            context: context.clone(),
+            aliases,
+        });
+    }
+    defs
+}
+
+fn collect_component_directories(root: &Path) -> Vec<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut collected = Vec::new();
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+
+        let mut has_manifest = false;
+        let mut has_compose = false;
+        let mut subdirs = Vec::new();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => {
+                    subdirs.push(path);
                 }
-                let canonical_id = canonicalize_id(id_raw, &context);
-                let mut aliases = Vec::new();
-                let component_manifest_path = component_dir.join("lcp.toml");
-                if let Ok(raw) = fs::read_to_string(&component_manifest_path) {
-                    match raw.parse::<TomlValue>() {
-                        Ok(component_manifest) => {
-                            if let Some(existing_id) =
-                                component_manifest.get("id").and_then(TomlValue::as_str)
-                            {
-                                if existing_id != canonical_id {
-                                    aliases.push(existing_id.to_string());
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            let _ = log_kernel_warn(
-                                None,
-                                "Failed to parse component manifest",
-                                Some(json!({
-                                    "path": component_manifest_path.display().to_string(),
-                                    "error": err.to_string()
-                                })),
-                                Some(json!({ "module": "resolver-helpers" })),
-                            );
+                Ok(_) | Err(_) => {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name == "lcp.toml" {
+                            has_manifest = true;
+                        } else if name == "compose.yaml" {
+                            has_compose = true;
                         }
                     }
                 }
-                defs.push(ResolverHelperDef {
-                    id: canonical_id,
-                    compose_path: compose_path.clone(),
-                    context: context.clone(),
-                    aliases,
-                });
             }
         }
+
+        if has_manifest && has_compose {
+            collected.push(dir.clone());
+        }
+
+        stack.extend(subdirs);
     }
-    defs
+
+    collected
 }
 
 fn create_context(
