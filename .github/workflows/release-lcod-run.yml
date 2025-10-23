@@ -145,13 +145,24 @@ jobs:
             echo "path=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_OUTPUT"
           else
             cp target/${{ matrix.target }}/release/lcod_run.exe dist/lcod-run.exe
-            mingw_bin="$(dirname "$(command -v x86_64-w64-mingw32-gcc || command -v gcc)")"
-            if [ -n "$mingw_bin" ] && [ -d "$mingw_bin" ]; then
+            mingw_gcc="$(command -v x86_64-w64-mingw32-gcc || command -v gcc || true)"
+            if [ -n "$mingw_gcc" ]; then
+              mingw_bin="$(dirname "$mingw_gcc")"
               mingw_root="$(cd "$mingw_bin/.." && pwd)"
               for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-                src="$(find "$mingw_root" -name "$dll" -print -quit 2>/dev/null || true)"
+                src=""
+                if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+                  candidate="$(x86_64-w64-mingw32-gcc -print-file-name="$dll" 2>/dev/null || true)"
+                  if [ -n "$candidate" ] && [ "$candidate" != "$dll" ] && [ -f "$candidate" ]; then
+                    src="$candidate"
+                  fi
+                fi
+                if [ -z "$src" ] || [ ! -f "$src" ]; then
+                  src="$(find "$mingw_root" -name "$dll" -print -quit 2>/dev/null || true)"
+                fi
                 if [ -n "$src" ] && [ -f "$src" ]; then
                   cp "$src" "dist/${dll}"
+                  echo "Bundled $dll from $src"
                 else
                   echo "::warning::Missing runtime DLL $dll under $mingw_root" >&2
                 fi
