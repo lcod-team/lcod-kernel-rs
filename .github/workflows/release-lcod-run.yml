@@ -145,14 +145,20 @@ jobs:
             echo "path=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_OUTPUT"
           else
             cp target/${{ matrix.target }}/release/lcod_run.exe dist/lcod-run.exe
-            for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-              src="/c/msys64/mingw64/bin/${dll}"
-              if [ -f "$src" ]; then
-                cp "$src" "dist/${dll}"
-              else
-                echo "::warning::Missing runtime DLL $dll at $src" >&2
-              fi
-            done
+            mingw_bin="$(dirname "$(command -v x86_64-w64-mingw32-gcc || command -v gcc)")"
+            if [ -n "$mingw_bin" ] && [ -d "$mingw_bin" ]; then
+              mingw_root="$(cd "$mingw_bin/.." && pwd)"
+              for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+                src="$(find "$mingw_root" -name "$dll" -print -quit 2>/dev/null || true)"
+                if [ -n "$src" ] && [ -f "$src" ]; then
+                  cp "$src" "dist/${dll}"
+                else
+                  echo "::warning::Missing runtime DLL $dll under $mingw_root" >&2
+                fi
+              done
+            else
+              echo "::warning::Unable to resolve MinGW toolchain path; runtime DLLs not bundled" >&2
+            fi
             powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist\\*' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
             echo "path=${{ matrix.artifact }}.zip" >> "$GITHUB_OUTPUT"
           fi
