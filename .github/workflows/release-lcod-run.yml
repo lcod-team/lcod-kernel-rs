@@ -145,7 +145,15 @@ jobs:
             echo "path=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_OUTPUT"
           else
             cp target/${{ matrix.target }}/release/lcod_run.exe dist/lcod-run.exe
-            powershell.exe -Command "Compress-Archive -Path dist/lcod-run.exe -DestinationPath ${{ matrix.artifact }}.zip"
+            for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+              src="/c/msys64/mingw64/bin/${dll}"
+              if [ -f "$src" ]; then
+                cp "$src" "dist/${dll}"
+              else
+                echo "::warning::Missing runtime DLL $dll at $src" >&2
+              fi
+            done
+            powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist\\*' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
             echo "path=${{ matrix.artifact }}.zip" >> "$GITHUB_OUTPUT"
           fi
 
