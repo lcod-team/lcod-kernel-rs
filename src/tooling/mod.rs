@@ -428,15 +428,15 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
     };
 
     let mut ensure_helper = |id: &str, rel_path: &[&str], base_path: &str| {
-        if existing.contains(id) {
-            return;
-        }
         let mut compose_path = spec_root.clone();
         for segment in rel_path {
             compose_path = compose_path.join(segment);
         }
         if !compose_path.is_file() {
             return;
+        }
+        if let Some(pos) = collected.iter().position(|def| def.id == id) {
+            collected.remove(pos);
         }
         collected.push(ResolverHelperDef {
             id: id.to_string(),
