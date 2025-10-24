@@ -51,6 +51,10 @@ fn register_std_helpers(registry: &Registry) {
         string_ensure_trailing_newline_helper,
     );
     registry.register(
+        "lcod://tooling/string/ensure_trailing_newline@0.1.0",
+        string_ensure_trailing_newline_helper,
+    );
+    registry.register(
         "lcod://contract/tooling/array/compact@1",
         array_compact_helper,
     );
