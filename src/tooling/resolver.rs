@@ -230,10 +230,7 @@ fn http_download_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
 
 fn path_to_string(path: &Path) -> Result<String> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    canonical
-        .into_os_string()
-        .into_string()
-        .map_err(|_| anyhow!("path contains invalid UTF-8"))
+    Ok(crate::core::path::path_to_string(&canonical))
 }
 
 fn decode_body(body: &Value, encoding: &str) -> Result<Vec<u8>> {

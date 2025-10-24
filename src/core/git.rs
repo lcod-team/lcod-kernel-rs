@@ -6,7 +6,6 @@ use std::time::SystemTime;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use git2::{build::RepoBuilder, FetchOptions, Oid, Repository};
 use humantime::format_rfc3339;
-use url::Url;
 use serde_json::{json, Map, Value};
 
 use crate::registry::{Context, Registry};
@@ -186,6 +185,7 @@ mod tests {
     use super::*;
     use git2::{Repository as GitRepository, Signature};
     use serde_json::json;
+    use url::Url;
 
     #[test]
     fn clones_local_repository() {

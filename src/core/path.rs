@@ -58,7 +58,17 @@ pub fn path_to_string(path: &Path) -> String {
     let rendered = path.to_string_lossy();
     #[cfg(windows)]
     {
-        rendered.replace('\\', "/")
+        let mut rendered = rendered.replace('\\', "/");
+        if let Some(stripped) = rendered.strip_prefix("//?/") {
+            rendered = stripped.to_string();
+        }
+        while rendered.contains("/./") {
+            rendered = rendered.replace("/./", "/");
+        }
+        if rendered.ends_with("/.") {
+            rendered.truncate(rendered.len().saturating_sub(2));
+        }
+        rendered
     }
     #[cfg(not(windows))]
     {

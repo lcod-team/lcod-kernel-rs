@@ -223,7 +223,7 @@ fn run_spec_register_components(
         run_compose(
             &mut ctx,
             &steps,
-            json!({ "specRoot": spec_root.to_string_lossy() }),
+            json!({ "specRoot": crate::core::path::path_to_string(&spec_root) }),
         )
     })();
 
