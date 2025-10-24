@@ -904,7 +904,7 @@ fn path_join_chain_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>
         }
     }
 
-    let path_str = current.to_string_lossy().replace('\\', '/');
+    let path_str = crate::core::path::path_to_string(&current);
     Ok(json!({ "path": path_str }))
 }
 

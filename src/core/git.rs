@@ -177,10 +177,7 @@ fn looks_like_commit(reference: &str) -> bool {
 
 fn path_to_string(path: &Path) -> Result<String> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    canonical
-        .into_os_string()
-        .into_string()
-        .map_err(|_| anyhow!("path contains invalid UTF-8"))
+    Ok(crate::core::path::path_to_string(&canonical))
 }
 
 #[cfg(test)]
@@ -224,7 +221,9 @@ mod tests {
         let commit_id = repo
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
-        let repo_url = format!("file://{}", repo_path.to_string_lossy().replace('\\', "/"));
+        let repo_url = url::Url::from_directory_path(&repo_path)
+            .expect("valid repository path")
+            .to_string();
         (temp, repo_url, commit_id.to_string())
     }
 }

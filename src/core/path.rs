@@ -54,8 +54,21 @@ fn push_segment(path: &mut PathBuf, segment: &str) {
     }
 }
 
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+pub(crate) fn path_to_string(path: &Path) -> String {
+    let mut rendered = path.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = rendered.strip_prefix("//?/") {
+        rendered = stripped.to_string();
+    }
+    while rendered.starts_with("./") {
+        rendered = rendered.strip_prefix("./").unwrap_or(&rendered).to_string();
+    }
+    while rendered.contains("/./") {
+        rendered = rendered.replace("/./", "/");
+    }
+    if rendered.ends_with("/.") {
+        rendered.truncate(rendered.len().saturating_sub(2));
+    }
+    rendered
 }
 
 #[cfg(test)]
