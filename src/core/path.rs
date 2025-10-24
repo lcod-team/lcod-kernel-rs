@@ -62,14 +62,17 @@ pub(crate) fn path_to_string(path: &Path) -> String {
         if let Some(stripped) = rendered.strip_prefix("//?/") {
             rendered = stripped.to_string();
         }
-        while rendered.starts_with("./") {
-            rendered = rendered.strip_prefix("./").unwrap_or(&rendered).to_string();
-        }
-        while rendered.contains("/./") {
-            rendered = rendered.replace("/./", "/");
-        }
-        if rendered.ends_with("/.") {
-            rendered.truncate(rendered.len().saturating_sub(2));
+    }
+    while rendered.contains("/./") {
+        rendered = rendered.replace("/./", "/");
+    }
+    while rendered.ends_with("/.") {
+        rendered.truncate(rendered.len().saturating_sub(2));
+    }
+    #[cfg(windows)]
+    {
+        while rendered.contains("//") {
+            rendered = rendered.replace("//", "/");
         }
     }
     rendered
