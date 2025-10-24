@@ -43,6 +43,10 @@ fn register_std_helpers(registry: &Registry) {
         value_is_defined_helper,
     );
     registry.register(
+        "lcod://tooling/value/is_defined@0.1.0",
+        value_is_defined_helper,
+    );
+    registry.register(
         "lcod://contract/tooling/string/ensure_trailing_newline@1",
         string_ensure_trailing_newline_helper,
     );
