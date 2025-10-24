@@ -46,6 +46,129 @@ pub fn flow_if(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<
     ctx.run_slot(slot_name, None, None)
 }
 
+fn has_slot(meta: &Option<Value>, name: &str) -> bool {
+    meta.as_ref()
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("children"))
+        .and_then(Value::as_object)
+        .and_then(|children| children.get(name))
+        .and_then(Value::as_array)
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false)
+}
+
+fn slot_vars(phase: &str, error: Option<&Value>) -> Value {
+    let mut vars = Map::new();
+    vars.insert("phase".to_string(), Value::String(phase.to_string()));
+    if let Some(err) = error {
+        vars.insert("error".to_string(), err.clone());
+    }
+    Value::Object(vars)
+}
+
+fn normalize_error_value(err: &anyhow::Error) -> Value {
+    let mut map = Map::new();
+    map.insert(
+        "code".to_string(),
+        Value::String("unexpected_error".to_string()),
+    );
+    map.insert("message".to_string(), Value::String(err.to_string()));
+    Value::Object(map)
+}
+
+fn replace_state(
+    target: &mut Map<String, Value>,
+    value: Value,
+    context: &str,
+) -> Result<()> {
+    match value {
+        Value::Object(map) => {
+            *target = map;
+        }
+        Value::Null => {}
+        other => {
+            return Err(anyhow!(
+                "flow/try: {} slot must return an object or null, got {}",
+                context,
+                other
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn merge_state(
+    target: &mut Map<String, Value>,
+    value: Value,
+    context: &str,
+) -> Result<()> {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                target.insert(key, val);
+            }
+        }
+        Value::Null => {}
+        other => {
+            return Err(anyhow!(
+                "flow/try: {} slot must return an object or null, got {}",
+                context,
+                other
+            ))
+        }
+    }
+    Ok(())
+}
+
+pub fn flow_try(ctx: &mut Context, _input: Value, meta: Option<Value>) -> Result<Value> {
+    let mut result_state = Map::new();
+    let mut pending_error: Option<anyhow::Error> = None;
+    let mut pending_error_value: Option<Value> = None;
+
+    match ctx.run_slot("children", None, Some(slot_vars("try", None))) {
+        Ok(value) => replace_state(&mut result_state, value, "try")?,
+        Err(err) => match err.downcast::<FlowSignalError>() {
+            Ok(signal) => return Err(signal.into()),
+            Err(err) => {
+                let normalized = normalize_error_value(&err);
+                pending_error_value = Some(normalized.clone());
+                pending_error = Some(err);
+            }
+        },
+    }
+
+    if pending_error.is_some() && has_slot(&meta, "catch") {
+        let error_value = pending_error_value.clone();
+        match ctx.run_slot("catch", None, Some(slot_vars("catch", error_value.as_ref()))) {
+            Ok(value) => {
+                replace_state(&mut result_state, value, "catch")?;
+                pending_error = None;
+                pending_error_value = None;
+            }
+            Err(err) => match err.downcast::<FlowSignalError>() {
+                Ok(signal) => return Err(signal.into()),
+                Err(err) => {
+                    let normalized = normalize_error_value(&err);
+                    pending_error_value = Some(normalized.clone());
+                    pending_error = Some(err);
+                }
+            },
+        }
+    }
+
+    if has_slot(&meta, "finally") {
+        let final_value =
+            ctx.run_slot("finally", None, Some(slot_vars("finally", pending_error_value.as_ref())))?;
+        merge_state(&mut result_state, final_value, "finally")?;
+    }
+
+    if let Some(err) = pending_error {
+        return Err(err);
+    }
+
+    Ok(Value::Object(result_state))
+}
+
 fn is_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -334,6 +457,7 @@ pub fn flow_while(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Resu
 pub fn register_flow(registry: &Registry) {
     registry.register("lcod://flow/break@1", flow_break);
     registry.register("lcod://flow/continue@1", flow_continue);
+    registry.register("lcod://flow/try@1", flow_try);
     registry.register("lcod://flow/if@1", flow_if);
     registry.register("lcod://flow/foreach@1", flow_foreach);
     registry.register("lcod://flow/check_abort@1", flow_check_abort);
