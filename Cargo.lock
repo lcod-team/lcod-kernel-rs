@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "csv-core"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d02f3b0da4c6504f86e9cd789d8dbafab48c2321be74e9987593de5a894d93d"
 dependencies = [
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "lcod-kernel-rs"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "base64",
