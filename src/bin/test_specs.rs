@@ -211,6 +211,9 @@ fn main() -> Result<()> {
                 println!("❌ {} — {}", res.name, err);
             } else {
                 println!("❌ {}", res.name);
+                if let Ok(details) = serde_json::to_string_pretty(res) {
+                    println!("{details}");
+                }
             }
         }
         if failures == 0 {
