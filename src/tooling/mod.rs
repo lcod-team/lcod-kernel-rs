@@ -59,7 +59,15 @@ fn register_std_helpers(registry: &Registry) {
         array_compact_helper,
     );
     registry.register(
+        "lcod://tooling/array/compact@0.1.0",
+        array_compact_helper,
+    );
+    registry.register(
         "lcod://contract/tooling/array/flatten@1",
+        array_flatten_helper,
+    );
+    registry.register(
+        "lcod://tooling/array/flatten@0.1.0",
         array_flatten_helper,
     );
     registry.register(
@@ -67,11 +75,23 @@ fn register_std_helpers(registry: &Registry) {
         array_find_duplicates_helper,
     );
     registry.register(
+        "lcod://tooling/array/find_duplicates@0.1.0",
+        array_find_duplicates_helper,
+    );
+    registry.register(
         "lcod://contract/tooling/array/append@1",
         array_append_helper,
     );
     registry.register(
+        "lcod://tooling/array/append@0.1.0",
+        array_append_helper,
+    );
+    registry.register(
         "lcod://contract/tooling/path/join_chain@1",
+        path_join_chain_helper,
+    );
+    registry.register(
+        "lcod://tooling/path/join_chain@0.1.0",
         path_join_chain_helper,
     );
     registry.register(
