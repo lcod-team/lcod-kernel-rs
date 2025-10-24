@@ -40,4 +40,4 @@ jobs:
       - name: Run spec fixtures
         env:
           SPEC_REPO_PATH: ${{ github.workspace }}/lcod-spec
-        run: cargo run --bin test_specs
+        run: cargo run --bin test_specs -- --json
