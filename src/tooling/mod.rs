@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -37,6 +38,42 @@ pub fn register_tooling(registry: &Registry) {
 }
 
 fn register_std_helpers(registry: &Registry) {
+    registry.register(
+        "lcod://contract/tooling/value/is_defined@1",
+        value_is_defined_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/string/ensure_trailing_newline@1",
+        string_ensure_trailing_newline_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/array/compact@1",
+        array_compact_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/array/flatten@1",
+        array_flatten_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/array/find_duplicates@1",
+        array_find_duplicates_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/array/append@1",
+        array_append_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/path/join_chain@1",
+        path_join_chain_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/fs/read_optional@1",
+        fs_read_optional_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/fs/write_if_changed@1",
+        fs_write_if_changed_helper,
+    );
     registry.register("lcod://tooling/object/clone@0.1.0", object_clone_helper);
     registry.register("lcod://tooling/object/set@0.1.0", object_set_helper);
     registry.register("lcod://tooling/object/has@0.1.0", object_has_helper);
@@ -712,6 +749,251 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
     for (id, rel_path, base_path) in definitions {
         ensure_helper(id, rel_path, base_path);
     }
+}
+
+fn non_empty_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+fn value_is_defined_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let has_key = input
+        .as_object()
+        .map(|map| map.contains_key("value"))
+        .unwrap_or(false);
+    let is_defined = has_key && !matches!(input.get("value"), Some(Value::Null));
+    Ok(json!({ "ok": is_defined }))
+}
+
+fn string_ensure_trailing_newline_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let mut text = input
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let newline = input
+        .get("newline")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("\n");
+
+    if newline.is_empty() || text.ends_with(newline) {
+        return Ok(json!({ "text": text }));
+    }
+
+    text.push_str(newline);
+    Ok(json!({ "text": text }))
+}
+
+fn array_compact_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let items = input
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let values: Vec<Value> = items
+        .into_iter()
+        .filter(|entry| !matches!(entry, Value::Null))
+        .collect();
+    Ok(json!({ "values": Value::Array(values) }))
+}
+
+fn array_flatten_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let items = input
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut values = Vec::new();
+    for entry in items {
+        match entry {
+            Value::Array(inner) => {
+                for nested in inner {
+                    if !matches!(nested, Value::Null) {
+                        values.push(nested);
+                    }
+                }
+            }
+            Value::Null => {}
+            other => values.push(other),
+        }
+    }
+    Ok(json!({ "values": Value::Array(values) }))
+}
+
+fn array_find_duplicates_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let items = input
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut duplicates = HashSet::new();
+    for entry in items {
+        if let Value::String(text) = entry {
+            if !seen.insert(text.clone()) {
+                duplicates.insert(text);
+            }
+        }
+    }
+    let mut list: Vec<Value> = duplicates.into_iter().map(Value::String).collect();
+    list.sort();
+    Ok(json!({ "duplicates": Value::Array(list) }))
+}
+
+fn array_append_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let mut result = input
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(values) = input.get("values").and_then(Value::as_array) {
+        result.extend(values.iter().cloned());
+    }
+    if input.as_object().map(|map| map.contains_key("value")).unwrap_or(false) {
+        result.push(input.get("value").cloned().unwrap_or(Value::Null));
+    }
+    let length = result.len();
+    Ok(json!({
+        "items": Value::Array(result),
+        "length": length
+    }))
+}
+
+fn path_join_chain_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let base = input
+        .get("base")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(PathBuf::new);
+    let segments = input
+        .get("segments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut current = base;
+    for segment in segments {
+        if segment.is_null() {
+            continue;
+        }
+        let segment_str = if let Some(s) = segment.as_str() {
+            s.to_string()
+        } else {
+            segment.to_string()
+        };
+        if segment_str.is_empty() {
+            continue;
+        }
+        if current.as_os_str().is_empty() {
+            current = PathBuf::from(segment_str);
+        } else {
+            current = current.join(segment_str);
+        }
+    }
+
+    let path_str = current.to_string_lossy().into_owned();
+    Ok(json!({ "path": path_str }))
+}
+
+fn fs_read_optional_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let encoding = non_empty_string(input.get("encoding")).unwrap_or_else(|| "utf-8".to_string());
+    let path_value = non_empty_string(input.get("path"));
+    let fallback = non_empty_string(input.get("fallback"));
+    let warning_message = non_empty_string(input.get("warningMessage"));
+
+    if path_value.is_none() {
+        return Ok(json!({
+            "text": fallback.map(Value::String).unwrap_or(Value::Null),
+            "exists": false,
+            "warning": warning_message.map(Value::String).unwrap_or(Value::Null)
+        }));
+    }
+
+    let path_str = path_value.unwrap();
+    match fs::read(&path_str) {
+        Ok(bytes) => {
+            let text = if encoding.eq_ignore_ascii_case("utf-8") {
+                String::from_utf8(bytes).unwrap_or_else(|_| String::new())
+            } else {
+                String::from_utf8_lossy(&bytes).into_owned()
+            };
+            Ok(json!({ "text": text, "exists": true, "warning": Value::Null }))
+        }
+        Err(err) => {
+            if let Some(fallback_text) = fallback {
+                return Ok(json!({
+                    "text": fallback_text,
+                    "exists": false,
+                    "warning": warning_message.clone().map(Value::String).unwrap_or(Value::Null)
+                }));
+            }
+            let warning = warning_message
+                .unwrap_or_else(|| err.to_string());
+            Ok(json!({
+                "text": Value::Null,
+                "exists": false,
+                "warning": warning
+            }))
+        }
+    }
+}
+
+fn fs_write_if_changed_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let path_str = input
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("write_if_changed: path is required"))?;
+
+    let encoding = non_empty_string(input.get("encoding")).unwrap_or_else(|| "utf-8".to_string());
+    let content = match input.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    };
+
+    let previous = match fs::read(&path_str) {
+        Ok(bytes) => {
+            if encoding.eq_ignore_ascii_case("utf-8") {
+                String::from_utf8(bytes).ok()
+            } else {
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    if previous
+        .as_ref()
+        .map(|existing| existing == &content)
+        .unwrap_or(false)
+    {
+        return Ok(json!({ "changed": false }));
+    }
+
+    fs::write(path_str, content.as_bytes())?;
+    Ok(json!({ "changed": true }))
 }
 
 fn object_clone_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
