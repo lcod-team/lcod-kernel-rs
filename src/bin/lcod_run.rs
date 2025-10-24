@@ -513,9 +513,9 @@ fn run_resolver_pipeline(registry: &Registry, project_path: &Path, lock_path: &P
     let steps = load_compose(&compose_path)?;
     let mut ctx = registry.context();
     let state = json!({
-        "projectPath": project_path.to_string_lossy().replace('\\', "/"),
+        "projectPath": lcod_kernel_rs::core::path::path_to_string(project_path),
         "configPath": Value::Null,
-        "outputPath": lock_path.to_string_lossy().replace('\\', "/"),
+        "outputPath": lcod_kernel_rs::core::path::path_to_string(lock_path),
     });
 
     let result = run_compose(&mut ctx, &steps, state)

@@ -42,16 +42,3 @@ The CI publishes a `run_compose` binary artefact for Linux on every push to `mai
 The reusable compose fixtures live under `lcod-spec/tests/spec` and are executed
 through both kernels. They rely on `tooling/test_checker@1` and provide parity
 coverage across substrates (`foreach` demos, streaming, scripting, slots).
-## Windows setup
-
-This repository defaults to the MinGW toolchain when running on Windows.
-Install MSYS2 (or another MinGW distribution) so that `C:/msys64/mingw64/bin` provides `gcc`, `dlltool`, and companions,
-then install the GNU Rust toolchain and set the override once inside the checkout:
-
-```powershell
-$Env:Path = 'C:/msys64/mingw64/bin;' + $Env:Path  # make dlltool/gcc reachable
-D:/DevDrive/pkg-cache/cargo/bin/rustup.exe override set stable-x86_64-pc-windows-gnu
-# afterwards plain `cargo test` will reuse the override
-```
-
-The `.cargo/config.toml` file pins the MinGW linker so CI and Windows developers stay aligned.

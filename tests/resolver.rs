@@ -504,9 +504,9 @@ fn load_sources_resolver_fixture_catalogues() {
     }
     let mut ctx = registry.context();
     let input = json!({
-        "projectPath": fixture_root.to_string_lossy().replace('\\', "/"),
-        "cacheDir": cache_dir.path().to_string_lossy().replace('\\', "/"),
-        "sourcesPath": sources_path.to_string_lossy().replace('\\', "/"),
+        "projectPath": lcod_kernel_rs::core::path::path_to_string(&fixture_root),
+        "cacheDir": lcod_kernel_rs::core::path::path_to_string(cache_dir.path()),
+        "sourcesPath": lcod_kernel_rs::core::path::path_to_string(&sources_path),
         "resolverConfig": {}
     });
 

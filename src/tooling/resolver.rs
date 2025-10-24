@@ -291,7 +291,7 @@ mod tests {
         register_resolver_axioms(&registry);
         let mut ctx = registry.context();
         let dest = tempfile::NamedTempFile::new().unwrap();
-        let path = dest.path().to_string_lossy().replace('\\', "/");
+        let path = crate::core::path::path_to_string(dest.path());
         drop(dest);
 
         let input = json!({

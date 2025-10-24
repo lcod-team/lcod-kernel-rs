@@ -6,6 +6,7 @@ use std::time::SystemTime;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use git2::{build::RepoBuilder, FetchOptions, Oid, Repository};
 use humantime::format_rfc3339;
+use url::Url;
 use serde_json::{json, Map, Value};
 
 use crate::registry::{Context, Registry};
@@ -221,7 +222,7 @@ mod tests {
         let commit_id = repo
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
-        let repo_url = url::Url::from_directory_path(&repo_path)
+        let repo_url = Url::from_directory_path(&repo_path)
             .expect("valid repository path")
             .to_string();
         (temp, repo_url, commit_id.to_string())

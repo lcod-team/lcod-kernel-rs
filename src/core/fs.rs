@@ -17,6 +17,36 @@ const CONTRACT_WRITE_ALT: &str = "lcod://contract/core/fs/write_file@1";
 const CONTRACT_LIST: &str = "lcod://contract/core/fs/list-dir@1";
 const CONTRACT_LIST_ALT: &str = "lcod://contract/core/fs/list_dir@1";
 
+#[cfg(windows)]
+fn from_unix_path(input: &str) -> PathBuf {
+    if input.is_empty() {
+        return PathBuf::new();
+    }
+
+    let mut rendered = input.replace('/', "\\");
+
+    if rendered.starts_with("\\\\") {
+        return PathBuf::from(rendered);
+    }
+
+    if rendered.starts_with("//?/") {
+        rendered = rendered.replacen("//?/", "\\\\?\\", 1);
+    } else if rendered.starts_with("//") {
+        rendered = rendered.replacen("//", "\\\\", 1);
+    }
+
+    PathBuf::from(rendered)
+}
+
+#[cfg(not(windows))]
+fn from_unix_path(input: &str) -> PathBuf {
+    PathBuf::from(input)
+}
+
+fn to_unix_path(path: &Path) -> String {
+    crate::core::path::path_to_string(path)
+}
+
 pub fn register_fs(registry: &Registry) {
     registry.register(CONTRACT_READ, read_file_contract);
     registry.register(CONTRACT_READ_ALT, read_file_contract);
@@ -52,7 +82,7 @@ fn read_file_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) ->
         .get("encoding")
         .and_then(Value::as_str)
         .unwrap_or("utf-8");
-    let path = Path::new(path_str);
+    let path = from_unix_path(path_str);
 
     let metadata =
         fs::metadata(&path).with_context(|| format!("unable to stat file: {}", path.display()))?;
@@ -97,7 +127,7 @@ fn write_file_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     let append = optional_bool(&input, "append", false);
     let create_parents = optional_bool(&input, "createParents", false);
 
-    let path = Path::new(path_str);
+    let path = from_unix_path(path_str);
     if create_parents {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -107,13 +137,16 @@ fn write_file_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     }
 
     let mut file = if append {
-        fs::OpenOptions::new().create(true).append(true).open(path)
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
     } else {
         fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
-            .open(path)
+            .open(&path)
     }
     .with_context(|| format!("unable to open file: {}", path.display()))?;
 
@@ -138,7 +171,7 @@ fn write_file_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     drop(file);
 
     let metadata =
-        fs::metadata(path).with_context(|| format!("unable to stat file: {}", path.display()))?;
+        fs::metadata(&path).with_context(|| format!("unable to stat file: {}", path.display()))?;
     let mtime = metadata.modified().ok().and_then(|t| to_rfc3339(t).ok());
 
     let mut map = Map::new();
@@ -157,7 +190,7 @@ fn list_dir_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> 
     let include_stats = optional_bool(&input, "includeStats", false);
     let max_depth = optional_usize(&input, "maxDepth").unwrap_or(usize::MAX);
 
-    let root = PathBuf::from(path_str);
+    let root = from_unix_path(path_str);
     let mut entries = Vec::new();
     walk_dir(
         &root,
@@ -207,7 +240,7 @@ fn walk_dir(
         object.insert("name".to_string(), Value::String(name.clone()));
         object.insert(
             "path".to_string(),
-            Value::String(path.to_string_lossy().replace('\\', "/")),
+            Value::String(to_unix_path(&path)),
         );
         let entry_type = if file_type.is_dir() {
             "directory"
@@ -246,4 +279,37 @@ fn walk_dir(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_from_unix_preserves_unc_prefix() {
+        let path = from_unix_path("//server/share/data.txt");
+        assert_eq!(path.to_string_lossy(), r"\\server\share\data.txt");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_from_unix_handles_extended_prefix() {
+        let path = from_unix_path("//?/C:/workspace/project");
+        assert_eq!(path.to_string_lossy(), r"\\?\C:\workspace\project");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_to_unix_roundtrips_backslashes() {
+        let original = std::path::PathBuf::from(r"C:\workspace\src\lib.rs");
+        assert_eq!(to_unix_path(&original), "C:/workspace/src/lib.rs");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_from_unix_is_identity() {
+        let path = from_unix_path("/tmp/data");
+        assert_eq!(path.to_string_lossy(), "/tmp/data");
+    }
 }
