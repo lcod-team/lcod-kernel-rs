@@ -904,7 +904,7 @@ fn path_join_chain_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>
         }
     }
 
-    let path_str = current.to_string_lossy().into_owned();
+    let path_str = current.to_string_lossy().replace('\\', '/');
     Ok(json!({ "path": path_str }))
 }
 
@@ -1856,3 +1856,4 @@ fn test_checker(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result
 
     Ok(Value::Object(report))
 }
+

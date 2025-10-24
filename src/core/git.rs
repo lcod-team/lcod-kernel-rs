@@ -224,7 +224,7 @@ mod tests {
         let commit_id = repo
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
-        let repo_url = format!("file://{}", repo_path.to_string_lossy());
+        let repo_url = format!("file://{}", repo_path.to_string_lossy().replace('\\', "/"));
         (temp, repo_url, commit_id.to_string())
     }
 }

@@ -207,7 +207,7 @@ fn walk_dir(
         object.insert("name".to_string(), Value::String(name.clone()));
         object.insert(
             "path".to_string(),
-            Value::String(path.to_string_lossy().to_string()),
+            Value::String(path.to_string_lossy().replace('\\', '/')),
         );
         let entry_type = if file_type.is_dir() {
             "directory"
