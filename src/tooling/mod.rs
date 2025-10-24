@@ -846,9 +846,10 @@ fn array_find_duplicates_helper(
             }
         }
     }
-    let mut list: Vec<Value> = duplicates.into_iter().map(Value::String).collect();
+    let mut list: Vec<String> = duplicates.into_iter().collect();
     list.sort();
-    Ok(json!({ "duplicates": Value::Array(list) }))
+    let values: Vec<Value> = list.into_iter().map(Value::String).collect();
+    Ok(json!({ "duplicates": Value::Array(values) }))
 }
 
 fn array_append_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
