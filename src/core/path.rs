@@ -69,6 +69,12 @@ pub fn path_to_string(path: &Path) -> String {
     if rendered.ends_with("/.") {
         rendered.truncate(rendered.len().saturating_sub(2));
     }
+    while rendered.starts_with("./") && rendered.len() > 2 {
+        rendered = rendered[2..].to_string();
+    }
+    if rendered == "./" {
+        rendered = ".".to_string();
+    }
     rendered
 }
 
@@ -117,5 +123,25 @@ mod tests {
         .unwrap();
         let path = result["path"].as_str().unwrap();
         assert!(path.ends_with("workspace/nested/file.toml"));
+    }
+
+    #[test]
+    fn strips_leading_current_dir_segments() {
+        let mut ctx = Registry::new().context();
+        let result = path_join_axiom(
+            &mut ctx,
+            json!({ "base": ".", "segment": "fixtures/basic" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result["path"], json!("fixtures/basic"));
+
+        let cache = path_join_axiom(
+            &mut ctx,
+            json!({ "base": ".", "segment": ".cache" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cache["path"], json!(".cache"));
     }
 }

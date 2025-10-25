@@ -1237,7 +1237,17 @@ fn queue_bfs_helper(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Re
         );
 
         let mut key = match key_value {
-            Ok(val) => val.as_str().map(|s| s.to_string()),
+            Ok(val) => {
+                if let Some(text) = val.as_str() {
+                    Some(text.to_string())
+                } else if let Some(obj) = val.as_object() {
+                    obj.get("key")
+                        .and_then(Value::as_str)
+                        .map(|text| text.to_string())
+                } else {
+                    None
+                }
+            }
             Err(err) => {
                 warnings.push(Value::String(format!("queue/bfs key slot failed: {err}")));
                 None

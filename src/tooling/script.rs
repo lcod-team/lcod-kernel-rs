@@ -74,6 +74,7 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
     if let Some(stream_specs) = input.get("streams") {
         common::register_streams(ctx, &mut initial_state, stream_specs)?;
     }
+    let state_snapshot = initial_state.clone();
 
     let bindings = build_bindings(&initial_state, input.get("bindings"));
     let meta = input
@@ -117,18 +118,20 @@ fn script_contract(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Res
                 mutated_state.and_then(|value| value.as_object().cloned())
             {
                 let patch_value = Value::Object(state_patch_map.clone());
-                if let Some(result_map) = result.as_object_mut() {
-                    result_map.insert("__lcod_state_patch".to_string(), patch_value);
-                    if let Some(pointer_value) = result_map.get("pointer").cloned() {
-                        result_map
-                            .entry("currentPointer".to_string())
-                            .or_insert(pointer_value);
+                if patch_value != state_snapshot {
+                    if let Some(result_map) = result.as_object_mut() {
+                        result_map.insert("__lcod_state_patch".to_string(), patch_value);
+                        if let Some(pointer_value) = result_map.get("pointer").cloned() {
+                            result_map
+                                .entry("currentPointer".to_string())
+                                .or_insert(pointer_value);
+                        }
+                    } else {
+                        let mut wrapper = Map::new();
+                        wrapper.insert("__lcod_state_patch".to_string(), patch_value);
+                        wrapper.insert("__lcod_result".to_string(), result);
+                        result = Value::Object(wrapper);
                     }
-                } else {
-                    let mut wrapper = Map::new();
-                    wrapper.insert("__lcod_state_patch".to_string(), patch_value);
-                    wrapper.insert("__lcod_result".to_string(), result);
-                    result = Value::Object(wrapper);
                 }
             }
             let logged_guard = messages.lock().unwrap();
