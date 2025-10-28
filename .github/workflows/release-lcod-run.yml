@@ -97,15 +97,64 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
-          echo "CC=x86_64-w64-mingw32-gcc" >> "$GITHUB_ENV"
-          echo "CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
-          echo "AR=ar" >> "$GITHUB_ENV"
-          echo "RANLIB=ranlib" >> "$GITHUB_ENV"
-          echo "CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc" >> "$GITHUB_ENV"
-          echo "CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
-          echo "AR_x86_64_pc_windows_gnu=ar" >> "$GITHUB_ENV"
-          echo "RANLIB_x86_64_pc_windows_gnu=ranlib" >> "$GITHUB_ENV"
+          set -euo pipefail
+          candidates=(
+            "C:/msys64/ucrt64/bin"
+            "C:/msys64/mingw64/bin"
+            "C:/msys64/clang64/bin"
+          )
+          toolchain_dir=""
+          for candidate in "${candidates[@]}"; do
+            if [ -d "$candidate" ] && compgen -G "$candidate/*gcc.exe" >/dev/null 2>&1; then
+              toolchain_dir="$candidate"
+              break
+            fi
+          done
+          if [ -z "$toolchain_dir" ]; then
+            echo "MinGW binaries not found in preinstalled locations; installing via Chocolatey."
+            choco install --yes --no-progress mingw
+            if [ -d "C:/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin" ]; then
+              toolchain_dir="C:/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin"
+            elif [ -d "C:/tools/mingw64/bin" ]; then
+              toolchain_dir="C:/tools/mingw64/bin"
+            else
+              echo "::error::Unable to locate MinGW toolchain after installation." >&2
+              exit 1
+            fi
+          fi
+          gcc_path="$toolchain_dir/x86_64-w64-mingw32-gcc.exe"
+          gxx_path="$toolchain_dir/x86_64-w64-mingw32-g++.exe"
+          ar_path="$toolchain_dir/x86_64-w64-mingw32-ar.exe"
+          ranlib_path="$toolchain_dir/x86_64-w64-mingw32-ranlib.exe"
+          if [ ! -f "$gcc_path" ] && [ -f "$toolchain_dir/gcc.exe" ]; then
+            gcc_path="$toolchain_dir/gcc.exe"
+          fi
+          if [ ! -f "$gxx_path" ] && [ -f "$toolchain_dir/g++.exe" ]; then
+            gxx_path="$toolchain_dir/g++.exe"
+          fi
+          if [ ! -f "$ar_path" ] && [ -f "$toolchain_dir/ar.exe" ]; then
+            ar_path="$toolchain_dir/ar.exe"
+          fi
+          if [ ! -f "$ranlib_path" ] && [ -f "$toolchain_dir/ranlib.exe" ]; then
+            ranlib_path="$toolchain_dir/ranlib.exe"
+          fi
+          if [ ! -f "$gcc_path" ]; then
+            echo "::error::gcc executable not found under $toolchain_dir" >&2
+            exit 1
+          fi
+          echo "$toolchain_dir" >> "$GITHUB_PATH"
+          echo "WINDOWS_MINGW_BIN=$toolchain_dir" >> "$GITHUB_ENV"
+          echo "CC=$gcc_path" >> "$GITHUB_ENV"
+          echo "CXX=$gxx_path" >> "$GITHUB_ENV"
+          echo "AR=$ar_path" >> "$GITHUB_ENV"
+          echo "RANLIB=$ranlib_path" >> "$GITHUB_ENV"
+          echo "CC_x86_64_pc_windows_gnu=$gcc_path" >> "$GITHUB_ENV"
+          echo "CXX_x86_64_pc_windows_gnu=$gxx_path" >> "$GITHUB_ENV"
+          echo "AR_x86_64_pc_windows_gnu=$ar_path" >> "$GITHUB_ENV"
+          echo "RANLIB_x86_64_pc_windows_gnu=$ranlib_path" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$gcc_path" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR=$ar_path" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RANLIB=$ranlib_path" >> "$GITHUB_ENV"
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -151,10 +200,18 @@ jobs:
             echo "path=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_OUTPUT"
           else
             cp target/${{ matrix.target }}/release/lcod_run.exe dist/lcod-run.exe
-            mingw_gcc="$(command -v x86_64-w64-mingw32-gcc || command -v gcc || true)"
-            if [ -n "$mingw_gcc" ]; then
-              mingw_bin="$(dirname "$mingw_gcc")"
+            mingw_bin="${WINDOWS_MINGW_BIN:-}"
+            mingw_root=""
+            if [ -n "$mingw_bin" ] && [ -d "$mingw_bin" ]; then
               mingw_root="$(cd "$mingw_bin/.." && pwd)"
+            else
+              mingw_gcc="$(command -v x86_64-w64-mingw32-gcc || command -v gcc || true)"
+              if [ -n "$mingw_gcc" ]; then
+                mingw_bin="$(dirname "$mingw_gcc")"
+                mingw_root="$(cd "$mingw_bin/.." && pwd)"
+              fi
+            fi
+            if [ -n "$mingw_root" ]; then
               for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
                 src=""
                 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
