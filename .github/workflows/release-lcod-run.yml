@@ -113,11 +113,25 @@ jobs:
           if [ -z "$toolchain_dir" ]; then
             echo "MinGW binaries not found in preinstalled locations; installing via Chocolatey."
             choco install --yes --no-progress mingw
-            if [ -d "C:/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin" ]; then
-              toolchain_dir="C:/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin"
-            elif [ -d "C:/tools/mingw64/bin" ]; then
-              toolchain_dir="C:/tools/mingw64/bin"
-            else
+            post_install_candidates=(
+              "C:/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin"
+              "C:/ProgramData/mingw64/mingw64/bin"
+              "C:/tools/mingw64/bin"
+              "C:/mingw64/bin"
+            )
+            for candidate in "${post_install_candidates[@]}"; do
+              if [ -d "$candidate" ] && compgen -G "$candidate/*gcc.exe" >/dev/null 2>&1; then
+                toolchain_dir="$candidate"
+                break
+              fi
+            done
+            if [ -z "$toolchain_dir" ]; then
+              discovered="$(find /c -maxdepth 4 -path '*/mingw64/bin' -type d -print -quit 2>/dev/null || true)"
+              if [ -n "$discovered" ]; then
+                toolchain_dir="$(cygpath -m "$discovered")"
+              fi
+            fi
+            if [ -z "$toolchain_dir" ]; then
               echo "::error::Unable to locate MinGW toolchain after installation." >&2
               exit 1
             fi
