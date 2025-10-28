@@ -25,6 +25,12 @@ jobs:
             archive: tar.gz
             rustflags: ""
           - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: lcod-run-macos-arm64
+            archive: tar.gz
+            mac_deployment_target: "13.0"
+            rustflags: ""
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: lcod-run-macos-x86_64
             archive: tar.gz
