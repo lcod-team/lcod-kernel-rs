@@ -35,6 +35,7 @@ pub fn register_tooling(registry: &Registry) {
     logging::register_logging(registry);
     register_std_helpers(registry);
     register_resolver_helpers(registry);
+    register_std_helpers(registry);
 }
 
 fn register_std_helpers(registry: &Registry) {
@@ -85,6 +86,10 @@ fn register_std_helpers(registry: &Registry) {
     registry.register(
         "lcod://tooling/array/append@0.1.0",
         array_append_helper,
+    );
+    registry.register(
+        "lcod://contract/tooling/queue/bfs@1",
+        queue_bfs_helper,
     );
     registry.register(
         "lcod://contract/tooling/path/join_chain@1",

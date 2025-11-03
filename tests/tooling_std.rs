@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use lcod_kernel_rs::register_flow;
 use lcod_kernel_rs::registry::{Context, Registry, SlotExecutor};
-use lcod_kernel_rs::tooling::register_tooling;
+use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
 use serde_json::{json, Map, Value};
 
 struct BfsSlot {
@@ -66,6 +67,8 @@ impl SlotExecutor for BfsSlot {
 #[test]
 fn object_clone_produces_deep_copy() {
     let registry = Registry::new();
+    register_flow(&registry);
+    register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
     let result = ctx
@@ -85,6 +88,8 @@ fn object_clone_produces_deep_copy() {
 #[test]
 fn object_set_assigns_nested_path() {
     let registry = Registry::new();
+    register_flow(&registry);
+    register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
     let result = ctx
@@ -121,6 +126,8 @@ fn object_set_assigns_nested_path() {
 #[test]
 fn object_has_returns_value() {
     let registry = Registry::new();
+    register_flow(&registry);
+    register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
     let result = ctx
@@ -140,6 +147,8 @@ fn object_has_returns_value() {
 #[test]
 fn json_stable_stringify_orders_keys() {
     let registry = Registry::new();
+    register_flow(&registry);
+    register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
     let result = ctx
@@ -165,6 +174,8 @@ fn json_stable_stringify_orders_keys() {
 #[test]
 fn hash_to_key_applies_prefix() {
     let registry = Registry::new();
+    register_flow(&registry);
+    register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
     let result = ctx
@@ -184,6 +195,8 @@ fn hash_to_key_applies_prefix() {
 #[test]
 fn queue_bfs_traverses_without_duplicates() {
     let registry = Registry::new();
+    register_flow(&registry);
+    register_resolver_axioms(&registry);
     register_tooling(&registry);
 
     let mut ctx = registry.context();
