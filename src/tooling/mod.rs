@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -59,18 +59,12 @@ fn register_std_helpers(registry: &Registry) {
         "lcod://contract/tooling/array/compact@1",
         array_compact_helper,
     );
-    registry.register(
-        "lcod://tooling/array/compact@0.1.0",
-        array_compact_helper,
-    );
+    registry.register("lcod://tooling/array/compact@0.1.0", array_compact_helper);
     registry.register(
         "lcod://contract/tooling/array/flatten@1",
         array_flatten_helper,
     );
-    registry.register(
-        "lcod://tooling/array/flatten@0.1.0",
-        array_flatten_helper,
-    );
+    registry.register("lcod://tooling/array/flatten@0.1.0", array_flatten_helper);
     registry.register(
         "lcod://contract/tooling/array/find_duplicates@1",
         array_find_duplicates_helper,
@@ -83,14 +77,8 @@ fn register_std_helpers(registry: &Registry) {
         "lcod://contract/tooling/array/append@1",
         array_append_helper,
     );
-    registry.register(
-        "lcod://tooling/array/append@0.1.0",
-        array_append_helper,
-    );
-    registry.register(
-        "lcod://contract/tooling/queue/bfs@1",
-        queue_bfs_helper,
-    );
+    registry.register("lcod://tooling/array/append@0.1.0", array_append_helper);
+    registry.register("lcod://contract/tooling/queue/bfs@1", queue_bfs_helper);
     registry.register(
         "lcod://contract/tooling/path/join_chain@1",
         path_join_chain_helper,
@@ -99,6 +87,12 @@ fn register_std_helpers(registry: &Registry) {
         "lcod://tooling/path/join_chain@0.1.0",
         path_join_chain_helper,
     );
+    registry.register("lcod://contract/tooling/jsonl/read@1", jsonl_read_helper);
+    registry.register(
+        "lcod://contract/tooling/jsonl/read@1.0.0",
+        jsonl_read_helper,
+    );
+    registry.register("lcod://tooling/jsonl/read@0.1.0", jsonl_read_helper);
     registry.register(
         "lcod://contract/tooling/fs/read_optional@1",
         fs_read_optional_helper,
@@ -791,7 +785,11 @@ fn non_empty_string(value: Option<&Value>) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn value_is_defined_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+fn value_is_defined_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
     let has_key = input
         .as_object()
         .map(|map| map.contains_key("value"))
@@ -894,7 +892,11 @@ fn array_append_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     if let Some(values) = input.get("values").and_then(Value::as_array) {
         result.extend(values.iter().cloned());
     }
-    if input.as_object().map(|map| map.contains_key("value")).unwrap_or(false) {
+    if input
+        .as_object()
+        .map(|map| map.contains_key("value"))
+        .unwrap_or(false)
+    {
         result.push(input.get("value").cloned().unwrap_or(Value::Null));
     }
     let length = result.len();
@@ -977,8 +979,7 @@ fn fs_read_optional_helper(
                     "warning": warning_message.clone().map(Value::String).unwrap_or(Value::Null)
                 }));
             }
-            let warning = warning_message
-                .unwrap_or_else(|| err.to_string());
+            let warning = warning_message.unwrap_or_else(|| err.to_string());
             Ok(json!({
                 "text": Value::Null,
                 "exists": false,
@@ -1159,6 +1160,68 @@ fn canonicalize(value: &Value) -> Value {
         }
         _ => value.clone(),
     }
+}
+
+fn jsonl_read_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    if let Some(url) = input.get("url").and_then(Value::as_str) {
+        return Err(anyhow!("jsonl/read does not support url input yet: {url}"));
+    }
+
+    let encoding = input
+        .get("encoding")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "utf-8".to_string());
+    if encoding != "utf-8" && encoding != "utf8" {
+        return Err(anyhow!(
+            "jsonl/read only supports utf-8 encoding (got {encoding})"
+        ));
+    }
+
+    let Some(path) = input.get("path").and_then(Value::as_str) else {
+        return Err(anyhow!("jsonl/read requires a `path`"));
+    };
+
+    let file =
+        fs::File::open(path).with_context(|| format!("unable to open JSONL file: {path}"))?;
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+    let mut warnings: Vec<Value> = Vec::new();
+
+    for (index, line_result) in reader.lines().enumerate() {
+        let line = match line_result {
+            Ok(line) => line,
+            Err(err) => {
+                warnings.push(Value::String(format!(
+                    "failed to read JSONL line {} from {}: {}",
+                    index + 1,
+                    path,
+                    err
+                )));
+                continue;
+            }
+        };
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<Value>(trimmed) {
+            Ok(value) => entries.push(value),
+            Err(err) => warnings.push(Value::String(format!(
+                "invalid JSONL entry at {} line {}: {}",
+                path,
+                index + 1,
+                err
+            ))),
+        }
+    }
+
+    Ok(json!({
+        "entries": Value::Array(entries),
+        "warnings": Value::Array(warnings)
+    }))
 }
 
 fn hash_to_key_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
@@ -1899,4 +1962,3 @@ fn test_checker(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result
 
     Ok(Value::Object(report))
 }
-

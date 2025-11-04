@@ -237,3 +237,74 @@ fn queue_bfs_traverses_without_duplicates() {
     assert!(visited.contains_key("b"));
     assert!(visited.contains_key("c"));
 }
+
+#[test]
+fn jsonl_read_parses_entries() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file_path = temp_dir.path().join("manifest.jsonl");
+    let content = r#"{"type":"manifest","schema":"lcod-manifest/list@1"}
+{"type":"component","id":"lcod://example/foo@0.1.0"}
+{"type":"list","path":"nested.jsonl"}
+"#;
+    std::fs::write(&file_path, content).expect("write jsonl");
+
+    let registry = Registry::new();
+    register_tooling(&registry);
+    let mut ctx = registry.context();
+    let result = ctx
+        .call(
+            "lcod://tooling/jsonl/read@0.1.0",
+            json!({ "path": file_path.to_string_lossy() }),
+            None,
+        )
+        .expect("jsonl read");
+
+    let entries = result
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("entries array");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[1]["type"], Value::from("component"));
+    assert_eq!(entries[2]["path"], Value::from("nested.jsonl"));
+}
+
+#[test]
+fn jsonl_read_collects_warnings() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file_path = temp_dir.path().join("manifest.jsonl");
+    let content = r#"{"type":"manifest","schema":"lcod-manifest/list@1"}
+not json
+{"type":"component","id":"lcod://example/foo@0.1.0"}
+"#;
+    std::fs::write(&file_path, content).expect("write jsonl with invalid line");
+
+    let registry = Registry::new();
+    register_tooling(&registry);
+    let mut ctx = registry.context();
+    let result = ctx
+        .call(
+            "lcod://tooling/jsonl/read@0.1.0",
+            json!({ "path": file_path.to_string_lossy() }),
+            None,
+        )
+        .expect("jsonl read");
+
+    let entries = result
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(entries.len(), 2);
+
+    let warnings = result
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0]
+        .as_str()
+        .unwrap_or_default()
+        .contains("invalid JSONL entry"));
+}
