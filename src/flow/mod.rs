@@ -76,11 +76,7 @@ fn normalize_error_value(err: &anyhow::Error) -> Value {
     Value::Object(map)
 }
 
-fn replace_state(
-    target: &mut Map<String, Value>,
-    value: Value,
-    context: &str,
-) -> Result<()> {
+fn replace_state(target: &mut Map<String, Value>, value: Value, context: &str) -> Result<()> {
     match value {
         Value::Object(map) => {
             *target = map;
@@ -97,11 +93,7 @@ fn replace_state(
     Ok(())
 }
 
-fn merge_state(
-    target: &mut Map<String, Value>,
-    value: Value,
-    context: &str,
-) -> Result<()> {
+fn merge_state(target: &mut Map<String, Value>, value: Value, context: &str) -> Result<()> {
     match value {
         Value::Object(map) => {
             for (key, val) in map {
@@ -139,7 +131,11 @@ pub fn flow_try(ctx: &mut Context, _input: Value, meta: Option<Value>) -> Result
 
     if pending_error.is_some() && has_slot(&meta, "catch") {
         let error_value = pending_error_value.clone();
-        match ctx.run_slot("catch", None, Some(slot_vars("catch", error_value.as_ref()))) {
+        match ctx.run_slot(
+            "catch",
+            None,
+            Some(slot_vars("catch", error_value.as_ref())),
+        ) {
             Ok(value) => {
                 replace_state(&mut result_state, value, "catch")?;
                 pending_error = None;
@@ -157,8 +153,11 @@ pub fn flow_try(ctx: &mut Context, _input: Value, meta: Option<Value>) -> Result
     }
 
     if has_slot(&meta, "finally") {
-        let final_value =
-            ctx.run_slot("finally", None, Some(slot_vars("finally", pending_error_value.as_ref())))?;
+        let final_value = ctx.run_slot(
+            "finally",
+            None,
+            Some(slot_vars("finally", pending_error_value.as_ref())),
+        )?;
         merge_state(&mut result_state, final_value, "finally")?;
     }
 

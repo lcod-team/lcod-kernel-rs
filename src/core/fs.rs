@@ -137,10 +137,7 @@ fn write_file_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     }
 
     let mut file = if append {
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+        fs::OpenOptions::new().create(true).append(true).open(&path)
     } else {
         fs::OpenOptions::new()
             .create(true)
@@ -238,10 +235,7 @@ fn walk_dir(
 
         let mut object = Map::new();
         object.insert("name".to_string(), Value::String(name.clone()));
-        object.insert(
-            "path".to_string(),
-            Value::String(to_unix_path(&path)),
-        );
+        object.insert("path".to_string(), Value::String(to_unix_path(&path)));
         let entry_type = if file_type.is_dir() {
             "directory"
         } else if file_type.is_symlink() {

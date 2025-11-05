@@ -206,7 +206,8 @@ fn execute_script(
     let ctx_ptr_call = ctx as *mut Context as usize;
 
     let cwd = env::current_dir()
-        .as_ref().map(|path| crate::core::path::path_to_string(path))
+        .as_ref()
+        .map(|path| crate::core::path::path_to_string(path))
         .unwrap_or_else(|_| ".".to_string());
     let cwd_literal = serde_json::to_string(&cwd)?;
     let env_map: HashMap<String, String> = env::vars().collect();

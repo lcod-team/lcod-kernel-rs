@@ -539,7 +539,10 @@ fn load_sources_resolver_fixture_catalogues() {
         match id {
             "fixture/core" => {
                 fixture_core_found = true;
-                assert_eq!(entry.get("priority").and_then(JsonValue::as_i64), Some(50));
+                assert!(
+                    entry.get("priority").and_then(JsonValue::as_i64).is_none(),
+                    "fixture/core catalogue should not expose priority anymore"
+                );
                 let lines = entry.get("lines").and_then(JsonValue::as_array).unwrap();
                 assert!(lines.iter().any(|line| {
                     line.get("id").and_then(JsonValue::as_str) == Some("lcod://fixture/core")
@@ -547,7 +550,10 @@ fn load_sources_resolver_fixture_catalogues() {
             }
             "fixture/extra" => {
                 fixture_extra_found = true;
-                assert_eq!(entry.get("priority").and_then(JsonValue::as_i64), Some(75));
+                assert!(
+                    entry.get("priority").and_then(JsonValue::as_i64).is_none(),
+                    "fixture/extra catalogue should not expose priority anymore"
+                );
                 let lines = entry.get("lines").and_then(JsonValue::as_array).unwrap();
                 assert!(lines.iter().any(|line| {
                     line.get("id").and_then(JsonValue::as_str) == Some("lcod://fixture/extra")

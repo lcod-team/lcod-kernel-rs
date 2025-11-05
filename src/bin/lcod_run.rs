@@ -1,11 +1,12 @@
+use std::collections::HashSet;
 use std::env;
-use std::fs;
-use std::io::{self, Cursor, Read};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
@@ -23,6 +24,7 @@ use lcod_kernel_rs::tooling::{
 };
 use lcod_kernel_rs::CancelledError;
 use lcod_kernel_rs::Context as KernelContext;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use serde_yaml;
 use sha2::{Digest, Sha256};
@@ -95,7 +97,7 @@ impl LogLevel {
 )]
 #[command(long_about = None)]
 struct CliOptions {
-    /// Path to the compose file to execute (YAML/JSON)
+    /// Path to the compose file to execute (YAML/JSON) or LCOD identifier (lcod://…)
     #[arg(long = "compose", short = 'c')]
     compose: PathBuf,
 
@@ -179,7 +181,9 @@ fn run() -> Result<()> {
 
     ensure_runtime_home()?;
 
-    let compose_holder = acquire_compose(&opts.compose)?;
+    let registry = setup_registry();
+
+    let compose_holder = acquire_compose(&registry, &opts.compose)?;
     let compose_path = compose_holder.path();
 
     let compose_dir = compose_path
@@ -210,8 +214,6 @@ fn run() -> Result<()> {
     fs::create_dir_all(&cache_dir)
         .with_context(|| format!("Unable to create cache directory {}", cache_dir.display()))?;
     env::set_var("LCOD_CACHE_DIR", &cache_dir);
-
-    let registry = setup_registry();
 
     let has_manifest = compose_dir.join("lcp.toml").is_file();
     if opts.resolve && !has_manifest {
@@ -252,7 +254,11 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn acquire_compose(input: &Path) -> Result<ComposeHandle> {
+fn acquire_compose(registry: &Registry, input: &Path) -> Result<ComposeHandle> {
+    let raw = input.to_string_lossy();
+    if raw.starts_with("lcod://") {
+        return resolve_component_to_compose(registry, raw.as_ref());
+    }
     if let Some(url) = parse_remote_url(input) {
         return download_compose(&url);
     }
@@ -265,6 +271,279 @@ fn acquire_compose(input: &Path) -> Result<ComposeHandle> {
         ));
     }
     Ok(ComposeHandle::local(canonical))
+}
+
+fn resolve_component_to_compose(registry: &Registry, component_id: &str) -> Result<ComposeHandle> {
+    let mut ctx = registry.context();
+    let result = match ctx.call(
+        "lcod://resolver/locate_component@0.1.0",
+        json!({
+            "componentId": component_id,
+        }),
+        None,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return fallback_resolve_component(component_id).map_err(|fallback_err| {
+                anyhow!(
+                    "Failed to resolve component {component_id}: {} (fallback attempt failed: {})",
+                    err,
+                    fallback_err
+                )
+            });
+        }
+    };
+
+    let found = result
+        .get("found")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !found {
+        return fallback_resolve_component(component_id)
+            .with_context(|| format!("Unable to locate component {component_id}"));
+    }
+
+    let resolved = result
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("locate_component returned no result"))?;
+
+    if let Some(compose_path) = resolved.get("composePath").and_then(Value::as_str) {
+        let path = PathBuf::from(compose_path);
+        if !path.is_file() {
+            return Err(anyhow!(
+                "Resolved compose for {component_id} does not exist at {}",
+                path.display()
+            ));
+        }
+        return Ok(ComposeHandle::local(path));
+    }
+
+    if let Some(compose) = resolved.get("compose").and_then(Value::as_object) {
+        if let Some(path_str) = compose.get("path").and_then(Value::as_str) {
+            let path = PathBuf::from(path_str);
+            if path.is_file() {
+                return Ok(ComposeHandle::local(path));
+            }
+        }
+    }
+
+    fallback_resolve_component(component_id).with_context(|| {
+        format!("Component {component_id} resolved but compose path is unavailable")
+    })
+}
+
+const DEFAULT_CATALOGUE_URL: &str = "https://raw.githubusercontent.com/lcod-team/lcod-components/main/registry/components.std.jsonl";
+const DEFAULT_COMPONENTS_REPO: &str = "https://github.com/lcod-team/lcod-components";
+const CATALOGUE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Deserialize)]
+struct CatalogueEntry {
+    id: Option<String>,
+    #[serde(default)]
+    compose: Option<String>,
+    #[serde(default)]
+    lcp: Option<CatalogueLcp>,
+    #[serde(default)]
+    origin: Option<CatalogueOrigin>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CatalogueLcp {
+    Path(String),
+    Object {
+        path: Option<String>,
+        url: Option<String>,
+    },
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CatalogueOrigin {
+    source_repo: Option<String>,
+    commit: Option<String>,
+}
+
+fn fallback_resolve_component(component_id: &str) -> Result<ComposeHandle> {
+    let (component_key, version) = split_component_id(component_id)?;
+    let cache_root = cache_root_dir()?;
+    fs::create_dir_all(&cache_root)
+        .with_context(|| format!("unable to create cache directory {}", cache_root.display()))?;
+
+    let catalogue_path = ensure_catalogue_cached(&cache_root)?;
+    let entry = find_catalogue_entry(&catalogue_path, component_id)?
+        .ok_or_else(|| anyhow!("Component {component_id} not found in default catalogue"))?;
+
+    let safe_key = sanitize_component_key(&component_key);
+    let component_dir = cache_root.join("components").join(&safe_key).join(&version);
+    fs::create_dir_all(&component_dir).with_context(|| {
+        format!(
+            "unable to create component cache directory {}",
+            component_dir.display()
+        )
+    })?;
+
+    let compose_path = component_dir.join("compose.yaml");
+    if !compose_path.is_file() {
+        let compose_url = build_component_url(&entry, entry.compose.as_deref())
+            .ok_or_else(|| anyhow!("catalogue entry for {component_id} missing compose path"))?;
+        download_url_to_path(&compose_url, &compose_path)?;
+    }
+
+    if let Some(lcp_path) = extract_lcp_path(entry.lcp.as_ref()) {
+        let target = component_dir.join("lcp.toml");
+        if !target.is_file() {
+            if let Some(lcp_url) = build_component_url(&entry, Some(lcp_path)) {
+                download_url_to_path(&lcp_url, &target)?;
+            }
+        }
+    }
+
+    if compose_path.is_file() {
+        Ok(ComposeHandle::local(compose_path))
+    } else {
+        Err(anyhow!(
+            "Component {component_id} resolved via fallback but compose file missing"
+        ))
+    }
+}
+
+fn extract_lcp_path(field: Option<&CatalogueLcp>) -> Option<&str> {
+    match field? {
+        CatalogueLcp::Path(value) => Some(value.as_str()),
+        CatalogueLcp::Object {
+            path: Some(value), ..
+        } => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+fn split_component_id(component_id: &str) -> Result<(String, String)> {
+    let trimmed = component_id
+        .strip_prefix("lcod://")
+        .ok_or_else(|| anyhow!("component id must start with lcod://"))?;
+    let mut parts = trimmed.split('@');
+    let key = parts
+        .next()
+        .ok_or_else(|| anyhow!("component id missing identifier"))?;
+    let version = parts.next().unwrap_or("0.0.0");
+    Ok((key.to_string(), version.to_string()))
+}
+
+fn sanitize_component_key(key: &str) -> String {
+    key.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+fn cache_root_dir() -> Result<PathBuf> {
+    let home = home_dir().ok_or_else(|| anyhow!("Unable to locate home directory"))?;
+    Ok(home.join(".lcod").join("cache"))
+}
+
+fn ensure_catalogue_cached(cache_root: &Path) -> Result<PathBuf> {
+    let catalogue_dir = cache_root.join("catalogues");
+    fs::create_dir_all(&catalogue_dir).with_context(|| {
+        format!(
+            "unable to create catalogue cache directory {}",
+            catalogue_dir.display()
+        )
+    })?;
+    let catalogue_path = catalogue_dir.join("components.std.jsonl");
+    let should_refresh = match fs::metadata(&catalogue_path) {
+        Ok(meta) => match meta.modified() {
+            Ok(modified) => {
+                SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or(Duration::from_secs(0))
+                    > CATALOGUE_TTL
+            }
+            Err(_) => true,
+        },
+        Err(_) => true,
+    };
+    if should_refresh {
+        download_url_to_path(DEFAULT_CATALOGUE_URL, &catalogue_path)?;
+    }
+    Ok(catalogue_path)
+}
+
+fn find_catalogue_entry(
+    catalogue_path: &Path,
+    component_id: &str,
+) -> Result<Option<CatalogueEntry>> {
+    let file = File::open(catalogue_path)
+        .with_context(|| format!("unable to open catalogue {}", catalogue_path.display()))?;
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: CatalogueEntry = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if entry.id.as_deref() == Some(component_id) {
+            return Ok(Some(entry));
+        }
+    }
+    Ok(None)
+}
+
+fn build_component_url(entry: &CatalogueEntry, path: Option<&str>) -> Option<String> {
+    let manifest_path = path?.trim().trim_start_matches("./");
+    if manifest_path.is_empty() {
+        return None;
+    }
+    let origin = entry.origin.as_ref();
+    let repo = origin
+        .and_then(|o| o.source_repo.as_deref())
+        .unwrap_or(DEFAULT_COMPONENTS_REPO);
+    let commit = origin.and_then(|o| o.commit.as_deref()).unwrap_or("main");
+    let raw_base = repo_to_raw_base(repo, commit).ok()?;
+    Some(format!("{}{}", raw_base, manifest_path))
+}
+
+fn repo_to_raw_base(repo: &str, commit: &str) -> Result<String> {
+    let repo = repo
+        .strip_suffix('/')
+        .unwrap_or(repo)
+        .strip_prefix("https://github.com/")
+        .ok_or_else(|| anyhow!("Unsupported repository URL: {repo}"))?;
+    Ok(format!(
+        "https://raw.githubusercontent.com/{}/{}/",
+        repo.trim_end_matches('/'),
+        commit
+    ))
+}
+
+fn download_url_to_path(url: &str, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("unable to create directory {}", parent.display()))?;
+    }
+
+    let agent = ureq::Agent::new();
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
+    if response.status() >= 400 {
+        return Err(anyhow!(
+            "Download failed for {}: HTTP {}",
+            url,
+            response.status()
+        ));
+    }
+
+    let mut reader = response.into_reader();
+    let mut file =
+        File::create(path).with_context(|| format!("unable to create file {}", path.display()))?;
+    io::copy(&mut reader, &mut file)
+        .with_context(|| format!("unable to write file {}", path.display()))?;
+    Ok(())
 }
 
 fn parse_remote_url(input: &Path) -> Option<Url> {
@@ -364,13 +643,55 @@ fn load_input_state(source: Option<String>) -> Result<Value> {
             }
         }
         Some(path) => {
-            let data =
-                fs::read_to_string(&path).with_context(|| format!("Unable to read {path}"))?;
-            serde_json::from_str(&data)
-                .with_context(|| format!("Invalid JSON payload in {path}"))?
+            let trimmed = path.trim_start();
+            if trimmed.starts_with('{') {
+                serde_json::from_str(path.as_str())
+                    .context("Invalid JSON payload provided via --input")?
+            } else {
+                let data =
+                    fs::read_to_string(&path).with_context(|| format!("Unable to read {path}"))?;
+                serde_json::from_str(&data)
+                    .with_context(|| format!("Invalid JSON payload in {path}"))?
+            }
         }
     };
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn load_input_state_defaults_to_empty_object() {
+        let value = load_input_state(None).unwrap();
+        assert_eq!(value, json!({}));
+    }
+
+    #[test]
+    fn load_input_state_parses_inline_json_object() {
+        let value = load_input_state(Some(r#"{"flag":true,"count":2}"#.to_string())).unwrap();
+        assert_eq!(value, json!({ "flag": true, "count": 2 }));
+    }
+
+    #[test]
+    fn load_input_state_reads_from_file_path() {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{{\"fromFile\":5}}").unwrap();
+        let value = load_input_state(Some(file.path().to_str().unwrap().to_string())).unwrap();
+        assert_eq!(value, json!({ "fromFile": 5 }));
+    }
+
+    #[test]
+    fn load_input_state_rejects_invalid_inline_json() {
+        let err = load_input_state(Some("{invalid".to_string())).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Invalid JSON payload provided via --input"));
+    }
 }
 
 fn setup_registry() -> Registry {
@@ -545,42 +866,90 @@ fn run_resolver_pipeline(registry: &Registry, project_path: &Path, lock_path: &P
 }
 
 fn resolver_compose_path() -> Result<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(home) = env::var("LCOD_HOME") {
-        candidates.push(
-            PathBuf::from(&home)
-                .join("resolver")
-                .join("packages")
-                .join("resolver")
-                .join("compose.yaml"),
-        );
-    }
-    if let Ok(path) = env::var("LCOD_RESOLVER_COMPOSE") {
-        candidates.push(PathBuf::from(path));
-    }
-    if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
-        let base = PathBuf::from(&path);
-        candidates.push(base.join("packages").join("resolver").join("compose.yaml"));
-        candidates.push(PathBuf::from(path).join("compose.yaml"));
-    }
-    if let Ok(spec) = env::var("SPEC_REPO_PATH") {
-        candidates.push(
-            PathBuf::from(spec)
-                .join("packages")
-                .join("resolver")
-                .join("compose.yaml"),
-        );
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(explicit) = env::var("LCOD_RESOLVER_COMPOSE") {
+        candidates.push(PathBuf::from(explicit));
     }
 
+    if let Ok(home) = env::var("LCOD_HOME") {
+        add_resolver_candidates(&mut candidates, &PathBuf::from(&home));
+    }
+
+    if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
+        add_resolver_candidates(&mut candidates, &PathBuf::from(&path));
+    }
+
+    if let Ok(spec) = env::var("SPEC_REPO_PATH") {
+        let spec_root = PathBuf::from(&spec);
+        add_resolver_candidates(&mut candidates, &spec_root);
+        if let Some(parent) = spec_root.parent() {
+            add_resolver_candidates(&mut candidates, &parent.join("lcod-resolver"));
+        }
+    }
+
+    if let Some(home) = home_dir() {
+        let runtime_root = home.join(".lcod").join("runtime");
+        if let Ok(entries) = fs::read_dir(&runtime_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                add_resolver_candidates(&mut candidates, &path);
+                if let Ok(inner) = fs::read_dir(&path) {
+                    for nested in inner.flatten() {
+                        add_resolver_candidates(&mut candidates, &nested.path());
+                    }
+                }
+            }
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    add_resolver_candidates(
+        &mut candidates,
+        &manifest_dir.join("..").join("lcod-resolver"),
+    );
+
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            add_resolver_candidates(&mut candidates, &exe_dir.join("resolver"));
+            add_resolver_candidates(&mut candidates, &exe_dir.join("..").join("lcod-resolver"));
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        add_resolver_candidates(&mut candidates, &cwd.join("lcod-resolver"));
+        add_resolver_candidates(&mut candidates, &cwd.join("../lcod-resolver"));
+    }
+
+    let mut seen = HashSet::new();
     for candidate in candidates {
+        let key = candidate.to_string_lossy().to_string();
+        if !seen.insert(key) {
+            continue;
+        }
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
 
     Err(anyhow!(
-        "Unable to locate resolver compose; ensure LCOD_HOME or LCOD_RESOLVER_PATH is configured"
+        "Unable to locate resolver compose; ensure LCOD_HOME, LCOD_RESOLVER_PATH, or a runtime install is available"
     ))
+}
+
+fn add_resolver_candidates(buffer: &mut Vec<PathBuf>, root: &Path) {
+    if root.as_os_str().is_empty() {
+        return;
+    }
+    buffer.push(root.join("compose.yaml"));
+    buffer.push(root.join("resolver").join("compose.yaml"));
+    buffer.push(root.join("packages").join("resolver").join("compose.yaml"));
+    buffer.push(
+        root.join("resolver")
+            .join("packages")
+            .join("resolver")
+            .join("compose.yaml"),
+    );
 }
 
 fn load_compose(path: &Path) -> Result<Vec<Step>> {

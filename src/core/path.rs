@@ -136,12 +136,8 @@ mod tests {
         .unwrap();
         assert_eq!(result["path"], json!("fixtures/basic"));
 
-        let cache = path_join_axiom(
-            &mut ctx,
-            json!({ "base": ".", "segment": ".cache" }),
-            None,
-        )
-        .unwrap();
+        let cache =
+            path_join_axiom(&mut ctx, json!({ "base": ".", "segment": ".cache" }), None).unwrap();
         assert_eq!(cache["path"], json!(".cache"));
     }
 }
