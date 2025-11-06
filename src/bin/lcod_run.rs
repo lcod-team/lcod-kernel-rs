@@ -333,7 +333,8 @@ fn resolve_component_to_compose(registry: &Registry, component_id: &str) -> Resu
     })
 }
 
-const DEFAULT_CATALOGUE_URL: &str = "https://raw.githubusercontent.com/lcod-team/lcod-components/main/registry/components.std.jsonl";
+const DEFAULT_CATALOGUE_URL: &str =
+    "https://raw.githubusercontent.com/lcod-team/lcod-components/main/registry/components.std.jsonl";
 const DEFAULT_COMPONENTS_REPO: &str = "https://github.com/lcod-team/lcod-components";
 const CATALOGUE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -437,12 +438,51 @@ fn sanitize_component_key(key: &str) -> String {
         .collect()
 }
 
+fn manifest_from_root(root: &Path) -> Option<PathBuf> {
+    let direct = root.join("manifest.jsonl");
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let nested = root.join("runtime").join("manifest.jsonl");
+    if nested.is_file() {
+        return Some(nested);
+    }
+    None
+}
+
+fn runtime_manifest_from_env() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(home) = env::var("LCOD_HOME") {
+        candidates.push(PathBuf::from(home));
+    }
+    if let Ok(spec) = env::var("SPEC_REPO_PATH") {
+        candidates.push(PathBuf::from(spec));
+    }
+    if let Ok(components) = env::var("LCOD_COMPONENTS_PATH") {
+        candidates.push(PathBuf::from(components));
+    }
+    for root in candidates {
+        if let Some(manifest) = manifest_from_root(&root) {
+            return Some(manifest);
+        }
+    }
+    None
+}
+
 fn cache_root_dir() -> Result<PathBuf> {
     let home = home_dir().ok_or_else(|| anyhow!("Unable to locate home directory"))?;
     Ok(home.join(".lcod").join("cache"))
 }
 
 fn ensure_catalogue_cached(cache_root: &Path) -> Result<PathBuf> {
+    if let Some(local_manifest) = runtime_manifest_from_env() {
+        return Ok(local_manifest);
+    }
+
+    if let Ok(release_manifest) = download_release_runtime_manifest(cache_root) {
+        return Ok(release_manifest);
+    }
+
     let catalogue_dir = cache_root.join("catalogues");
     fs::create_dir_all(&catalogue_dir).with_context(|| {
         format!(
@@ -467,6 +507,60 @@ fn ensure_catalogue_cached(cache_root: &Path) -> Result<PathBuf> {
         download_url_to_path(DEFAULT_CATALOGUE_URL, &catalogue_path)?;
     }
     Ok(catalogue_path)
+}
+
+fn download_release_runtime_manifest(cache_root: &Path) -> Result<PathBuf> {
+    let version = env!("CARGO_PKG_VERSION");
+    let manifest_dir = cache_root.join("runtime_manifests");
+    fs::create_dir_all(&manifest_dir).with_context(|| {
+        format!(
+            "unable to create runtime manifest cache directory {}",
+            manifest_dir.display()
+        )
+    })?;
+    let manifest_path = manifest_dir.join(format!("manifest-{}.jsonl", version));
+    if manifest_path.is_file() {
+        return Ok(manifest_path);
+    }
+
+    let url = format!(
+        "https://github.com/lcod-team/lcod-release/releases/download/v{0}/lcod-kernel-js-runtime-{0}.tar.gz",
+        version
+    );
+
+    let mut tmpfile = manifest_path.clone();
+    tmpfile.set_extension("tar.gz.tmp");
+    download_url_to_path(&url, &tmpfile).with_context(|| {
+        format!(
+            "failed to download runtime manifest archive from {}",
+            url
+        )
+    })?;
+
+    let tar_file = File::open(&tmpfile)?;
+    let gz = GzDecoder::new(tar_file);
+    let mut archive = Archive::new(gz);
+    let mut found = false;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry
+            .path()
+            .ok()
+            .and_then(|p| p.into_owned().into_os_string().into_string().ok())
+            .unwrap_or_default();
+        if path.ends_with("manifest.jsonl") {
+            let mut out = File::create(&manifest_path)?;
+            io::copy(&mut entry, &mut out)?;
+            found = true;
+            break;
+        }
+    }
+    let _ = fs::remove_file(&tmpfile);
+    if found && manifest_path.is_file() {
+        Ok(manifest_path)
+    } else {
+        Err(anyhow!("runtime manifest not found in release archive {}", url))
+    }
 }
 
 fn find_catalogue_entry(
