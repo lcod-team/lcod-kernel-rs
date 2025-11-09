@@ -259,6 +259,10 @@ fn sanitize_component_input(value: Value, metadata: &ComponentMetadata) -> Value
         filtered.insert(key.clone(), entry);
     }
 
+    for (key, value) in original {
+        filtered.entry(key).or_insert(value);
+    }
+
     Value::Object(filtered)
 }
 
