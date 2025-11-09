@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
 
 use crate::compose::{parse_compose, run_compose};
-use crate::registry::{Context, Registry};
+use crate::registry::{ComponentMetadata, Context, Registry};
 use crate::tooling::logging::log_kernel_warn;
 
 fn parse_bindings(value: Option<&Value>) -> Option<HashMap<String, String>> {
@@ -84,6 +84,24 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
             continue;
         }
 
+        let metadata = ComponentMetadata {
+            inputs: obj
+                .get("inputs")
+                .and_then(Value::as_object)
+                .map(|map| map.keys().cloned().collect())
+                .unwrap_or_default(),
+            outputs: obj
+                .get("outputs")
+                .and_then(Value::as_object)
+                .map(|map| map.keys().cloned().collect())
+                .unwrap_or_default(),
+            slots: obj
+                .get("slots")
+                .and_then(Value::as_object)
+                .map(|map| map.keys().cloned().collect())
+                .unwrap_or_default(),
+        };
+
         if let Some(compose_value) = obj.get("compose").and_then(Value::as_array) {
             let compose_json = Value::Array(compose_value.clone());
             let mut steps = parse_compose(&compose_json).map_err(|err| {
@@ -105,7 +123,12 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
             let steps_arc = Arc::new(steps);
             let id_owned = component_id.to_string();
             let registry_clone = registry.clone();
-            registry_clone.register(
+            let metadata_arc = if metadata.is_empty() {
+                None
+            } else {
+                Some(Arc::new(metadata.clone()))
+            };
+            registry_clone.register_with_metadata(
                 id_owned.clone(),
                 move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
                     let seed = match input {
@@ -124,6 +147,7 @@ fn register_inline_components(ctx: &mut Context, value: Option<&Value>) -> Resul
                     }
                     Ok(result)
                 },
+                metadata_arc,
             );
             continue;
         }
