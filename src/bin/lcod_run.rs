@@ -285,6 +285,11 @@ fn resolve_component_to_compose(registry: &Registry, component_id: &str) -> Resu
         return Ok(local_handle);
     }
 
+    let fallback_err = match fallback_resolve_component(component_id) {
+        Ok(handle) => return Ok(handle),
+        Err(err) => err,
+    };
+
     let mut ctx = registry.context();
     let result = match ctx.call(
         "lcod://resolver/locate_component@0.1.0",
@@ -295,13 +300,9 @@ fn resolve_component_to_compose(registry: &Registry, component_id: &str) -> Resu
     ) {
         Ok(value) => value,
         Err(err) => {
-            return fallback_resolve_component(component_id).map_err(|fallback_err| {
-                anyhow!(
-                    "Failed to resolve component {component_id}: {} (fallback attempt failed: {})",
-                    err,
-                    fallback_err
-                )
-            });
+            return Err(anyhow!(
+                "Failed to resolve component {component_id}: {fallback_err} (resolver attempt failed: {err})"
+            ));
         }
     };
 
@@ -310,8 +311,9 @@ fn resolve_component_to_compose(registry: &Registry, component_id: &str) -> Resu
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if !found {
-        return fallback_resolve_component(component_id)
-            .with_context(|| format!("Unable to locate component {component_id}"));
+        return Err(anyhow!(
+            "Unable to locate component {component_id}: {fallback_err}"
+        ));
     }
 
     let resolved = result
@@ -451,6 +453,11 @@ fn materialize_component_from_entry(
     manifest_base: Option<&Path>,
     cache_root: &Path,
 ) -> Result<ComposeHandle> {
+    if let Some(local_path) = resolve_local_manifest_file(manifest_base, entry.compose.as_deref())
+    {
+        return Ok(ComposeHandle::local(local_path));
+    }
+
     let safe_key = sanitize_component_key(component_key);
     let component_dir = cache_root.join("components").join(&safe_key).join(version);
     fs::create_dir_all(&component_dir).with_context(|| {
@@ -488,6 +495,18 @@ fn materialize_component_from_entry(
         Err(anyhow!(
             "Component {component_id} resolved but compose file is unavailable"
         ))
+    }
+}
+
+fn resolve_local_manifest_file(base_dir: Option<&Path>, entry_path: Option<&str>) -> Option<PathBuf> {
+    let base = base_dir?;
+    let rel = entry_path?;
+    let cleaned = rel.trim_start_matches("./");
+    let candidate = base.join(cleaned);
+    if candidate.is_file() {
+        candidate.canonicalize().ok().or(Some(candidate))
+    } else {
+        None
     }
 }
 
