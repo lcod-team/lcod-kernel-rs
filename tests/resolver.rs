@@ -1,4 +1,5 @@
 use lcod_kernel_rs::compose::{parse_compose, run_compose, Step};
+use lcod_kernel_rs::compose_contracts::register_compose_contracts;
 use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::registry::Registry;
@@ -286,6 +287,7 @@ fn new_registry() -> Registry {
     let registry = Registry::new();
     register_core(&registry);
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_tooling(&registry);
     register_resolver_axioms(&registry);
     registry

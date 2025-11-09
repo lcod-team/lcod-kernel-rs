@@ -14,7 +14,8 @@ use dirs::home_dir;
 use flate2::read::GzDecoder;
 use hex;
 use humantime::format_duration;
-use lcod_kernel_rs::compose::{parse_compose, run_compose, Step};
+use lcod_kernel_rs::compose::{parse_compose, run_compose, Step, RAW_INPUT_KEY};
+use lcod_kernel_rs::compose_contracts::register_compose_contracts;
 use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::http::register_http_contracts;
@@ -25,7 +26,7 @@ use lcod_kernel_rs::tooling::{
 use lcod_kernel_rs::CancelledError;
 use lcod_kernel_rs::Context as KernelContext;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use serde_yaml;
 use sha2::{Digest, Sha256};
 use tar::Archive;
@@ -64,6 +65,12 @@ impl ComposeHandle {
     fn is_temporary(&self) -> bool {
         self.temp_dir.is_some()
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct ManifestMetadata {
+    inputs: Vec<String>,
+    outputs: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -228,18 +235,17 @@ fn run() -> Result<()> {
     }
 
     let initial_state = load_input_state(opts.input)?;
+    let manifest_metadata = load_manifest_metadata(compose_path);
+    let (state_map, wrapped_input) = ensure_object_state(initial_state);
+    if wrapped_input {
+        eprintln!("warning: input payload is not an object; wrapping under {{\"input\": ...}}");
+    }
+    let sanitized_state = sanitize_input_state(state_map, manifest_metadata.as_ref());
     let compose_steps = load_compose(compose_path)?;
 
     let mut ctx = registry.context_with_cancellation(cancellation.clone());
 
-    // ensure initial state is an object
-    let state = match initial_state {
-        Value::Object(map) => Value::Object(map),
-        other => {
-            eprintln!("warning: input payload is not an object; wrapping under {{\"input\": ...}}");
-            json!({ "input": other })
-        }
-    };
+    let state = Value::Object(sanitized_state);
 
     let result = match run_compose(&mut ctx, &compose_steps, state) {
         Ok(value) => value,
@@ -250,7 +256,8 @@ fn run() -> Result<()> {
         Err(err) => return Err(err.context("Compose execution failed")),
     };
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let projected = project_outputs(result, manifest_metadata.as_ref());
+    println!("{}", serde_json::to_string_pretty(&projected)?);
     Ok(())
 }
 
@@ -274,6 +281,10 @@ fn acquire_compose(registry: &Registry, input: &Path) -> Result<ComposeHandle> {
 }
 
 fn resolve_component_to_compose(registry: &Registry, component_id: &str) -> Result<ComposeHandle> {
+    if let Some(local_handle) = resolve_component_from_workspace(component_id)? {
+        return Ok(local_handle);
+    }
+
     let mut ctx = registry.context();
     let result = match ctx.call(
         "lcod://resolver/locate_component@0.1.0",
@@ -338,6 +349,13 @@ const DEFAULT_CATALOGUE_URL: &str =
 const DEFAULT_COMPONENTS_REPO: &str = "https://github.com/lcod-team/lcod-components";
 const CATALOGUE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
+const WORKSPACE_MANIFEST_FILES: &[&str] = &[
+    "registry/components.std.jsonl",
+    "components.std.jsonl",
+    "manifest.jsonl",
+    "runtime/manifest.jsonl",
+];
+
 #[derive(Debug, Deserialize)]
 struct CatalogueEntry {
     id: Option<String>,
@@ -373,11 +391,68 @@ fn fallback_resolve_component(component_id: &str) -> Result<ComposeHandle> {
         .with_context(|| format!("unable to create cache directory {}", cache_root.display()))?;
 
     let catalogue_path = ensure_catalogue_cached(&cache_root)?;
+    let manifest_base = catalogue_base_dir(&catalogue_path);
     let entry = find_catalogue_entry(&catalogue_path, component_id)?
         .ok_or_else(|| anyhow!("Component {component_id} not found in default catalogue"))?;
 
-    let safe_key = sanitize_component_key(&component_key);
-    let component_dir = cache_root.join("components").join(&safe_key).join(&version);
+    materialize_component_from_entry(
+        component_id,
+        &component_key,
+        &version,
+        &entry,
+        manifest_base.as_deref(),
+        &cache_root,
+    )
+}
+
+fn resolve_component_from_workspace(component_id: &str) -> Result<Option<ComposeHandle>> {
+    let (component_key, version) = split_component_id(component_id)?;
+    let cache_root = cache_root_dir()?;
+    fs::create_dir_all(&cache_root)
+        .with_context(|| format!("unable to create cache directory {}", cache_root.display()))?;
+    let debug_workspace = env::var("LCOD_DEBUG_WORKSPACE").is_ok();
+
+    for manifest in workspace_manifest_candidates() {
+        if !manifest.is_file() {
+            continue;
+        }
+        if debug_workspace {
+            eprintln!("[workspace] scanning {}", manifest.display());
+        }
+        if let Some(entry) = find_catalogue_entry(&manifest, component_id)? {
+            if debug_workspace {
+                eprintln!(
+                    "[workspace] found {} in {}",
+                    component_id,
+                    manifest.display()
+                );
+            }
+            let manifest_base = catalogue_base_dir(&manifest);
+            let handle = materialize_component_from_entry(
+                component_id,
+                &component_key,
+                &version,
+                &entry,
+                manifest_base.as_deref(),
+                &cache_root,
+            )?;
+            return Ok(Some(handle));
+        }
+    }
+
+    Ok(None)
+}
+
+fn materialize_component_from_entry(
+    component_id: &str,
+    component_key: &str,
+    version: &str,
+    entry: &CatalogueEntry,
+    manifest_base: Option<&Path>,
+    cache_root: &Path,
+) -> Result<ComposeHandle> {
+    let safe_key = sanitize_component_key(component_key);
+    let component_dir = cache_root.join("components").join(&safe_key).join(version);
     fs::create_dir_all(&component_dir).with_context(|| {
         format!(
             "unable to create component cache directory {}",
@@ -386,17 +461,23 @@ fn fallback_resolve_component(component_id: &str) -> Result<ComposeHandle> {
     })?;
 
     let compose_path = component_dir.join("compose.yaml");
-    if !compose_path.is_file() {
-        let compose_url = build_component_url(&entry, entry.compose.as_deref())
-            .ok_or_else(|| anyhow!("catalogue entry for {component_id} missing compose path"))?;
-        download_url_to_path(&compose_url, &compose_path)?;
+    if !try_copy_catalogue_file(manifest_base, entry.compose.as_deref(), &compose_path)? {
+        if !compose_path.is_file() {
+            let compose_url =
+                build_component_url(entry, entry.compose.as_deref()).ok_or_else(|| {
+                    anyhow!("catalogue entry for {component_id} missing compose path")
+                })?;
+            download_url_to_path(&compose_url, &compose_path)?;
+        }
     }
 
     if let Some(lcp_path) = extract_lcp_path(entry.lcp.as_ref()) {
         let target = component_dir.join("lcp.toml");
-        if !target.is_file() {
-            if let Some(lcp_url) = build_component_url(&entry, Some(lcp_path)) {
-                download_url_to_path(&lcp_url, &target)?;
+        if !try_copy_catalogue_file(manifest_base, Some(lcp_path), &target)? {
+            if !target.is_file() {
+                if let Some(lcp_url) = build_component_url(entry, Some(lcp_path)) {
+                    download_url_to_path(&lcp_url, &target)?;
+                }
             }
         }
     }
@@ -405,7 +486,7 @@ fn fallback_resolve_component(component_id: &str) -> Result<ComposeHandle> {
         Ok(ComposeHandle::local(compose_path))
     } else {
         Err(anyhow!(
-            "Component {component_id} resolved via fallback but compose file missing"
+            "Component {component_id} resolved but compose file is unavailable"
         ))
     }
 }
@@ -450,6 +531,23 @@ fn manifest_from_root(root: &Path) -> Option<PathBuf> {
     None
 }
 
+fn catalogue_base_dir(manifest: &Path) -> Option<PathBuf> {
+    let parent = manifest.parent()?;
+    if parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("registry"))
+        .unwrap_or(false)
+    {
+        parent
+            .parent()
+            .map(|dir| dir.to_path_buf())
+            .or_else(|| Some(parent.to_path_buf()))
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
 fn runtime_manifest_from_env() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(home) = env::var("LCOD_HOME") {
@@ -469,12 +567,92 @@ fn runtime_manifest_from_env() -> Option<PathBuf> {
     None
 }
 
+fn workspace_manifest_candidates() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let debug_workspace = env::var("LCOD_DEBUG_WORKSPACE").is_ok();
+
+    if let Ok(raw) = env::var("LCOD_COMPONENTS_MANIFESTS") {
+        for entry in env::split_paths(&raw) {
+            push_unique_path(&mut files, entry);
+        }
+    }
+
+    for root in workspace_roots() {
+        if debug_workspace {
+            eprintln!("[workspace] root candidate {}", root.display());
+        }
+        for relative in WORKSPACE_MANIFEST_FILES {
+            push_unique_path(&mut files, root.join(relative));
+        }
+    }
+
+    if debug_workspace {
+        for file in &files {
+            eprintln!("[workspace] manifest candidate {}", file.display());
+        }
+    }
+
+    files
+}
+
+fn workspace_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Ok(raw) = env::var("LCOD_WORKSPACE_PATHS") {
+        for entry in env::split_paths(&raw) {
+            push_unique_dir(&mut roots, entry);
+        }
+    }
+    if let Ok(raw) = env::var("LCOD_COMPONENTS_PATHS") {
+        for entry in env::split_paths(&raw) {
+            push_unique_dir(&mut roots, entry);
+        }
+    }
+    if let Ok(raw) = env::var("LCOD_COMPONENTS_PATH") {
+        for entry in env::split_paths(&raw) {
+            push_unique_dir(&mut roots, entry);
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        push_unique_dir(&mut roots, cwd);
+    }
+
+    roots
+}
+
+fn push_unique_path(buffer: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if candidate.as_os_str().is_empty() {
+        return;
+    }
+    if buffer.iter().any(|existing| existing == &candidate) {
+        return;
+    }
+    buffer.push(candidate);
+}
+
+fn push_unique_dir(buffer: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if candidate.as_os_str().is_empty() {
+        return;
+    }
+    if let Ok(resolved) = candidate.canonicalize() {
+        push_unique_path(buffer, resolved);
+    } else {
+        push_unique_path(buffer, candidate);
+    }
+}
+
 fn cache_root_dir() -> Result<PathBuf> {
     let home = home_dir().ok_or_else(|| anyhow!("Unable to locate home directory"))?;
     Ok(home.join(".lcod").join("cache"))
 }
 
 fn ensure_catalogue_cached(cache_root: &Path) -> Result<PathBuf> {
+    for candidate in workspace_manifest_candidates() {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
     if let Some(local_manifest) = runtime_manifest_from_env() {
         return Ok(local_manifest);
     }
@@ -530,12 +708,8 @@ fn download_release_runtime_manifest(cache_root: &Path) -> Result<PathBuf> {
 
     let mut tmpfile = manifest_path.clone();
     tmpfile.set_extension("tar.gz.tmp");
-    download_url_to_path(&url, &tmpfile).with_context(|| {
-        format!(
-            "failed to download runtime manifest archive from {}",
-            url
-        )
-    })?;
+    download_url_to_path(&url, &tmpfile)
+        .with_context(|| format!("failed to download runtime manifest archive from {}", url))?;
 
     let tar_file = File::open(&tmpfile)?;
     let gz = GzDecoder::new(tar_file);
@@ -559,7 +733,10 @@ fn download_release_runtime_manifest(cache_root: &Path) -> Result<PathBuf> {
     if found && manifest_path.is_file() {
         Ok(manifest_path)
     } else {
-        Err(anyhow!("runtime manifest not found in release archive {}", url))
+        Err(anyhow!(
+            "runtime manifest not found in release archive {}",
+            url
+        ))
     }
 }
 
@@ -680,6 +857,41 @@ fn download_compose(url: &Url) -> Result<ComposeHandle> {
     Ok(ComposeHandle::temporary(path, temp_dir))
 }
 
+fn try_copy_catalogue_file(
+    base_dir: Option<&Path>,
+    relative_path: Option<&str>,
+    target: &Path,
+) -> Result<bool> {
+    let Some(base) = base_dir else {
+        return Ok(false);
+    };
+    let Some(relative) = relative_path else {
+        return Ok(false);
+    };
+
+    let normalized = relative.trim().trim_start_matches("./");
+    if normalized.is_empty() {
+        return Ok(false);
+    }
+    let source = base.join(normalized);
+    if !source.is_file() {
+        return Ok(false);
+    }
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("unable to create directory {}", parent.display()))?;
+    }
+    fs::copy(&source, target).with_context(|| {
+        format!(
+            "unable to copy component asset from {} to {}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    Ok(true)
+}
+
 fn derive_remote_filename(url: &Url) -> PathBuf {
     let path = Path::new(url.path());
     if let Some(name) = path.file_name().filter(|n| !n.is_empty()) {
@@ -791,6 +1003,7 @@ mod tests {
 fn setup_registry() -> Registry {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_core(&registry);
     register_http_contracts(&registry);
     register_tooling(&registry);
@@ -1222,4 +1435,82 @@ fn canonicalize_id(raw: &str, context: &ManifestContext) -> Option<String> {
     let version = context.version.as_deref().unwrap_or("0.0.0");
     let id = format!("lcod://{}@{}", parts.join("/"), version);
     Some(id)
+}
+
+fn load_manifest_metadata(compose_path: &Path) -> Option<ManifestMetadata> {
+    let manifest_path = compose_path.parent()?.join("lcp.toml");
+    let raw = fs::read_to_string(&manifest_path).ok()?;
+    let value: TomlValue = raw.parse().ok()?;
+    let inputs = extract_manifest_keys(value.get("inputs"));
+    let outputs = extract_manifest_keys(value.get("outputs"));
+    if inputs.is_empty() && outputs.is_empty() {
+        None
+    } else {
+        Some(ManifestMetadata { inputs, outputs })
+    }
+}
+
+fn extract_manifest_keys(section: Option<&TomlValue>) -> Vec<String> {
+    section
+        .and_then(TomlValue::as_table)
+        .map(|table| table.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn ensure_object_state(state: Value) -> (Map<String, Value>, bool) {
+    match state {
+        Value::Object(map) => (map, false),
+        other => {
+            let mut wrapper = Map::new();
+            wrapper.insert("input".to_string(), other);
+            (wrapper, true)
+        }
+    }
+}
+
+fn sanitize_input_state(
+    mut state: Map<String, Value>,
+    metadata: Option<&ManifestMetadata>,
+) -> Map<String, Value> {
+    let Some(meta) = metadata else {
+        return state;
+    };
+    if meta.inputs.is_empty() {
+        return state;
+    }
+
+    let original = state.clone();
+    let mut filtered = Map::new();
+    filtered.insert(RAW_INPUT_KEY.to_string(), Value::Object(original.clone()));
+    filtered.insert("value".to_string(), Value::Object(original));
+
+    for key in &meta.inputs {
+        let value = state.remove(key).unwrap_or(Value::Null);
+        filtered.insert(key.clone(), value);
+    }
+
+    filtered
+}
+
+fn project_outputs(value: Value, metadata: Option<&ManifestMetadata>) -> Value {
+    let Some(meta) = metadata else {
+        return value;
+    };
+    if meta.outputs.is_empty() {
+        return Value::Object(Map::new());
+    }
+    let mut map = match value {
+        Value::Object(map) => map,
+        other => {
+            let mut wrapper = Map::new();
+            wrapper.insert("value".to_string(), other);
+            wrapper
+        }
+    };
+    let mut projected = Map::new();
+    for key in &meta.outputs {
+        let entry = map.remove(key).unwrap_or(Value::Null);
+        projected.insert(key.clone(), entry);
+    }
+    Value::Object(projected)
 }

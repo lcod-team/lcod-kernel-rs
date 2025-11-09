@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
 
+use lcod_kernel_rs::compose_contracts::register_compose_contracts;
 use lcod_kernel_rs::flow::{flow_while, register_flow};
 use lcod_kernel_rs::registry::{Context as KernelContext, Registry, SlotExecutor};
 use lcod_kernel_rs::CancelledError;
@@ -87,6 +88,7 @@ impl SlotExecutor for ElseSlot {
 fn flow_while_runs_until_condition_false() -> Result<()> {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
 
     let mut ctx = registry.context();
     ctx.replace_run_slot_handler(Some(Box::new(TestWhileSlot { threshold: 3 })));
@@ -124,6 +126,7 @@ fn flow_while_runs_until_condition_false() -> Result<()> {
 fn flow_while_honours_max_iterations() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
 
     let mut ctx = registry.context();
     ctx.replace_run_slot_handler(Some(Box::new(TestWhileSlot { threshold: 10 })));
@@ -143,6 +146,7 @@ fn flow_while_honours_max_iterations() {
 fn flow_while_aborts_when_context_cancelled() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
 
     let mut ctx = registry.context();
     ctx.replace_run_slot_handler(Some(Box::new(CancellingSlot {
@@ -165,6 +169,7 @@ fn flow_while_aborts_when_context_cancelled() {
 fn flow_while_invokes_else_when_no_iterations() -> Result<()> {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
 
     let mut ctx = registry.context();
     ctx.replace_run_slot_handler(Some(Box::new(ElseSlot)));

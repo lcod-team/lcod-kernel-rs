@@ -5,12 +5,15 @@ use std::fs;
 use std::path::PathBuf;
 
 use lcod_kernel_rs::compose::{parse_compose, Step, StepChildren};
-use lcod_kernel_rs::{register_demo_impls, register_flow, run_compose, Context, Registry};
+use lcod_kernel_rs::{
+    register_compose_contracts, register_demo_impls, register_flow, run_compose, Context, Registry,
+};
 
 fn create_registry() -> Registry {
     let registry = Registry::new();
 
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_demo_impls(&registry);
 
     register_stream_contracts(&registry);

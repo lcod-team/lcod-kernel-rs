@@ -12,8 +12,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use lcod_kernel_rs::compose::{parse_compose, run_compose, Step};
 use lcod_kernel_rs::{
-    register_core, register_flow, register_http_contracts, register_tooling,
-    Context as KernelContext, Registry,
+    register_compose_contracts, register_core, register_flow, register_http_contracts,
+    register_tooling, Context as KernelContext, Registry,
 };
 use serde_json::{Map, Value};
 use serde_yaml;
@@ -418,6 +418,7 @@ fn run() -> Result<()> {
 
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_core(&registry);
     register_tooling(&registry);
     register_http_contracts(&registry);

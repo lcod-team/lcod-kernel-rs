@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use toml::Value as TomlValue;
 
 use crate::compose::{parse_compose, run_compose};
-use crate::registry::{Context, Registry};
+use crate::registry::{ComponentMetadata, Context, Registry};
 
 mod common;
 mod logging;
@@ -280,20 +280,24 @@ fn register_resolver_helpers(registry: &Registry) {
                     continue;
                 }
 
-                let steps = if let Some(inline) = component.get("compose") {
-                    parse_compose(inline).with_context(|| {
+                let (compose_steps, compose_path_buf) = if let Some(inline) =
+                    component.get("compose")
+                {
+                    let steps = parse_compose(inline).with_context(|| {
                         format!("resolver/register: invalid inline compose for {}", id_raw)
-                    })?
+                    })?;
+                    (steps, None)
                 } else if let Some(path_str) = component.get("composePath").and_then(Value::as_str)
                 {
                     let path = PathBuf::from(path_str);
-                    load_compose_from_path(&path).with_context(|| {
+                    let steps = load_compose_from_path(&path).with_context(|| {
                         format!(
                             "resolver/register: failed to load compose for {} from {}",
                             id_raw,
                             path.display()
                         )
-                    })?
+                    })?;
+                    (steps, Some(path))
                 } else {
                     warnings.push(format!(
                         "resolver/register: component {} missing compose data",
@@ -302,10 +306,17 @@ fn register_resolver_helpers(registry: &Registry) {
                     continue;
                 };
 
-                let steps_arc = Arc::new(steps);
+                let metadata = find_component_manifest_path(
+                    &component,
+                    compose_path_buf.as_ref().map(|path| path.as_path()),
+                )
+                .and_then(|manifest_path| load_component_metadata(&manifest_path));
+
+                let steps_arc = Arc::new(compose_steps);
                 let id_string = id_raw.to_string();
                 let registry_clone = dynamic_registry.clone();
-                registry_clone.register(
+                let metadata_arc = metadata.map(Arc::new);
+                registry_clone.register_with_metadata(
                     id_string.clone(),
                     move |ctx_inner: &mut Context,
                           input_inner: Value,
@@ -313,6 +324,7 @@ fn register_resolver_helpers(registry: &Registry) {
                         let steps = Arc::clone(&steps_arc);
                         run_compose(ctx_inner, &steps, input_inner)
                     },
+                    metadata_arc.clone(),
                 );
                 count += 1;
             }
@@ -363,6 +375,7 @@ fn register_resolver_helpers(registry: &Registry) {
     for def in defs {
         let compose_path = Arc::new(def.compose_path);
         let context = Arc::new(def.context);
+        let metadata = def.metadata.map(Arc::new);
         let ids: Vec<String> = std::iter::once(def.id.clone())
             .chain(def.aliases.into_iter())
             .collect();
@@ -370,7 +383,16 @@ fn register_resolver_helpers(registry: &Registry) {
             let id_arc = Arc::new(id.clone());
             let compose_path = Arc::clone(&compose_path);
             let context = Arc::clone(&context);
-            registry.register(
+            let metadata_handle = metadata.clone();
+            if id_arc.contains("testkit") {
+                let meta_flag = metadata_handle.is_some();
+                let source = compose_path.display().to_string();
+                eprintln!(
+                    "[registry] registering {} metadata_present={} source={}",
+                    id_arc, meta_flag, source
+                );
+            }
+            registry.register_with_metadata(
                 id,
                 move |ctx: &mut Context, input: Value, _meta: Option<Value>| {
                     let steps =
@@ -379,6 +401,7 @@ fn register_resolver_helpers(registry: &Registry) {
                         })?;
                     run_compose(ctx, &steps, input)
                 },
+                metadata_handle.clone(),
             );
         }
     }
@@ -396,6 +419,35 @@ struct ResolverHelperDef {
     compose_path: PathBuf,
     context: HelperContext,
     aliases: Vec<String>,
+    metadata: Option<ComponentMetadata>,
+}
+
+fn find_component_manifest_path(component: &Value, compose_path: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = component.get("lcpPath").and_then(Value::as_str) {
+        return Some(resolve_manifest_path(path, compose_path));
+    }
+    if let Some(lcp_field) = component.get("lcp") {
+        if let Some(path) = lcp_field.as_str() {
+            return Some(resolve_manifest_path(path, compose_path));
+        }
+        if let Some(obj) = lcp_field.as_object() {
+            if let Some(path) = obj.get("path").and_then(Value::as_str) {
+                return Some(resolve_manifest_path(path, compose_path));
+            }
+        }
+    }
+    compose_path.and_then(|path| path.parent().map(|dir| dir.join("lcp.toml")))
+}
+
+fn resolve_manifest_path(path: &str, compose_path: Option<&Path>) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    if let Some(base) = compose_path.and_then(|cp| cp.parent()) {
+        return base.join(path);
+    }
+    candidate
 }
 
 #[derive(Debug)]
@@ -410,6 +462,45 @@ struct Candidate {
     path: PathBuf,
 }
 
+fn push_candidate_if_exists(
+    seen: &mut HashSet<String>,
+    out: &mut Vec<Candidate>,
+    kind: CandidateKind,
+    path: PathBuf,
+) {
+    if !path.exists() {
+        return;
+    }
+    let key = format!("{:?}:{}", kind, path.display());
+    if !seen.insert(key) {
+        return;
+    }
+    out.push(Candidate { kind, path });
+}
+
+fn include_workspace_sources(seen: &mut HashSet<String>, out: &mut Vec<Candidate>, path: PathBuf) {
+    if !path.exists() {
+        return;
+    }
+    let mut handled = false;
+    if path.join("workspace.lcp.toml").is_file() {
+        push_candidate_if_exists(seen, out, CandidateKind::Root, path.clone());
+        handled = true;
+    }
+    let components_dir = path.join("components");
+    if components_dir.is_dir() {
+        push_candidate_if_exists(seen, out, CandidateKind::Legacy, components_dir);
+        handled = true;
+    }
+    let std_components = path.join("packages").join("std").join("components");
+    if std_components.is_dir() {
+        push_candidate_if_exists(seen, out, CandidateKind::Legacy, std_components);
+        handled = true;
+    }
+    if !handled && path.is_dir() {
+        push_candidate_if_exists(seen, out, CandidateKind::Legacy, path);
+    }
+}
 fn build_helper_definitions() -> Vec<ResolverHelperDef> {
     let candidates = gather_candidates();
     let mut collected = Vec::new();
@@ -426,63 +517,99 @@ fn build_helper_definitions() -> Vec<ResolverHelperDef> {
 fn gather_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut push = |kind: CandidateKind, path: PathBuf, out: &mut Vec<Candidate>| {
-        if !path.exists() {
-            return;
-        }
-        let key = format!("{:?}:{}", kind, path.display());
-        if !seen.insert(key) {
-            return;
-        }
-        out.push(Candidate { kind, path });
-    };
+
+
     if let Some(runtime_resolver) = runtime_resolver_root() {
-        push(CandidateKind::Root, runtime_resolver, &mut out);
+        push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Root, runtime_resolver);
     }
     if let Some(runtime) = runtime_root() {
         let tooling_resolver = runtime.join("tooling").join("resolver");
-        push(CandidateKind::Legacy, tooling_resolver, &mut out);
+        push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Legacy, tooling_resolver);
         let tooling_registry = runtime.join("tooling").join("registry");
-        push(CandidateKind::Legacy, tooling_registry, &mut out);
+        push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Legacy, tooling_registry);
     }
-    if let Ok(path) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
-        push(CandidateKind::Legacy, PathBuf::from(path), &mut out);
+
+    if let Ok(paths) = env::var("LCOD_RESOLVER_COMPONENTS_PATH") {
+        for entry in env::split_paths(&paths) {
+            push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Legacy, entry);
+        }
     }
-    if let Ok(path) = env::var("LCOD_RESOLVER_PATH") {
-        push(CandidateKind::Root, PathBuf::from(path), &mut out);
+    if let Ok(paths) = env::var("LCOD_RESOLVER_PATH") {
+        for entry in env::split_paths(&paths) {
+            push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Root, entry);
+        }
     }
     if let Some(spec_root) = resolve_spec_root() {
         let tooling_root = spec_root.join("tooling");
-        push(
+        push_candidate_if_exists(
+            &mut seen,
+            &mut out,
             CandidateKind::Legacy,
             tooling_root.join("resolver"),
-            &mut out,
         );
-        push(
+        push_candidate_if_exists(
+            &mut seen,
+            &mut out,
             CandidateKind::Legacy,
             tooling_root.join("registry"),
-            &mut out,
         );
-        push(CandidateKind::Legacy, tooling_root, &mut out);
+        push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Legacy, tooling_root);
     }
+
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    push(
+    push_candidate_if_exists(
+        &mut seen,
+        &mut out,
         CandidateKind::Root,
         manifest_dir.join("..").join("lcod-resolver"),
-        &mut out,
     );
-    if let Some(local_components) = manifest_dir
+
+    for path in collect_workspace_paths() {
+        include_workspace_sources(&mut seen, &mut out, path);
+    }
+
+    out
+}
+
+fn collect_workspace_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        paths.push(cwd);
+    }
+    for var in [
+        "LCOD_COMPONENTS_PATH",
+        "LCOD_COMPONENTS_PATHS",
+        "LCOD_WORKSPACE_PATHS",
+    ] {
+        if let Ok(raw) = env::var(var) {
+            for entry in env::split_paths(&raw) {
+                paths.push(entry);
+            }
+        }
+    }
+
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let default_components = manifest_dir
         .join("..")
         .join("lcod-components")
         .canonicalize()
-        .ok()
-    {
-        push(CandidateKind::Root, local_components, &mut out);
-    } else if let Ok(path) = env::var("LCOD_COMPONENTS_PATH") {
-        let base = PathBuf::from(path);
-        push(CandidateKind::Root, base, &mut out);
+        .unwrap_or_else(|_| manifest_dir.join("..").join("lcod-components"));
+    paths.push(default_components);
+
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        let normalized = path.canonicalize().unwrap_or(path);
+        let key = normalized.to_string_lossy().to_string();
+        if seen.insert(key) {
+            unique.push(normalized);
+        }
     }
-    out
+    unique
 }
 
 fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
@@ -502,6 +629,10 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
         if let Some(pos) = collected.iter().position(|def| def.id == id) {
             collected.remove(pos);
         }
+        let manifest_path = compose_path.parent().map(|dir| dir.join("lcp.toml"));
+        let metadata = manifest_path
+            .as_ref()
+            .and_then(|path| load_component_metadata(path));
         collected.push(ResolverHelperDef {
             id: id.to_string(),
             compose_path: compose_path.clone(),
@@ -511,6 +642,7 @@ fn append_spec_fallbacks(collected: &mut Vec<ResolverHelperDef>) {
                 alias_map: HashMap::new(),
             },
             aliases: Vec::new(),
+            metadata,
         });
         existing.insert(id.to_string());
     };
@@ -1561,6 +1693,7 @@ fn load_package_components_from_dir(
             );
             continue;
         };
+        let metadata = load_component_metadata(&manifest_path);
         let canonical_id = canonicalize_id(component_id_raw, context);
         let mut aliases = Vec::new();
         if canonical_id != component_id_raw {
@@ -1571,6 +1704,7 @@ fn load_package_components_from_dir(
             compose_path: compose_path.clone(),
             context: context.clone(),
             aliases,
+            metadata,
         });
     }
     defs
@@ -1615,6 +1749,26 @@ fn collect_component_directories(root: &Path) -> Vec<PathBuf> {
     }
 
     collected
+}
+
+fn load_component_metadata(manifest_path: &Path) -> Option<ComponentMetadata> {
+    let raw = fs::read_to_string(manifest_path).ok()?;
+    let value: TomlValue = raw.parse().ok()?;
+    let inputs = extract_metadata_keys(value.get("inputs"));
+    let outputs = extract_metadata_keys(value.get("outputs"));
+    let slots = extract_metadata_keys(value.get("slots"));
+    Some(ComponentMetadata {
+        inputs,
+        outputs,
+        slots,
+    })
+}
+
+fn extract_metadata_keys(section: Option<&TomlValue>) -> Vec<String> {
+    section
+        .and_then(TomlValue::as_table)
+        .map(|table| table.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 fn create_context(
@@ -1723,6 +1877,7 @@ fn load_legacy_component_definitions(dir: &Path) -> Vec<ResolverHelperDef> {
         let version = extract_version_from_id(component_id)
             .unwrap_or("0.0.0")
             .to_string();
+        let metadata = load_component_metadata(&manifest_path);
         defs.push(ResolverHelperDef {
             id: component_id.to_string(),
             compose_path: compose_path.clone(),
@@ -1732,6 +1887,7 @@ fn load_legacy_component_definitions(dir: &Path) -> Vec<ResolverHelperDef> {
                 alias_map: HashMap::new(),
             },
             aliases: Vec::new(),
+            metadata,
         });
     }
     defs

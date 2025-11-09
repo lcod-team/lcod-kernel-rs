@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use lcod_kernel_rs::compose_contracts::register_compose_contracts;
 use lcod_kernel_rs::register_flow;
 use lcod_kernel_rs::registry::{Context, Registry, SlotExecutor};
 use lcod_kernel_rs::tooling::{register_resolver_axioms, register_tooling};
@@ -68,6 +69,7 @@ impl SlotExecutor for BfsSlot {
 fn object_clone_produces_deep_copy() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
@@ -89,6 +91,7 @@ fn object_clone_produces_deep_copy() {
 fn object_set_assigns_nested_path() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
@@ -127,6 +130,7 @@ fn object_set_assigns_nested_path() {
 fn object_has_returns_value() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
@@ -148,6 +152,7 @@ fn object_has_returns_value() {
 fn json_stable_stringify_orders_keys() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
@@ -175,6 +180,7 @@ fn json_stable_stringify_orders_keys() {
 fn hash_to_key_applies_prefix() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_resolver_axioms(&registry);
     register_tooling(&registry);
     let mut ctx = registry.context();
@@ -196,6 +202,7 @@ fn hash_to_key_applies_prefix() {
 fn queue_bfs_traverses_without_duplicates() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_resolver_axioms(&registry);
     register_tooling(&registry);
 

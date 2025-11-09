@@ -1,1 +1,4 @@
 /target
+/.lcod/
+**/.lcod/
+**/lcp.lock

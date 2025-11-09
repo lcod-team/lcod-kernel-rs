@@ -5,7 +5,8 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context as _, Result};
 use lcod_kernel_rs::tooling::register_resolver_axioms;
 use lcod_kernel_rs::{
-    register_core, register_flow, register_tooling, Context as KernelContext, Registry,
+    register_compose_contracts, register_core, register_flow, register_tooling,
+    Context as KernelContext, Registry,
 };
 use serde_json::{json, Value};
 
@@ -111,6 +112,7 @@ fn catalog_generation_via_runtime_bundle() -> Result<()> {
 
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_core(&registry);
     register_tooling(&registry);
     register_resolver_axioms(&registry);

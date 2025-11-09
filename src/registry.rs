@@ -8,6 +8,7 @@ use std::sync::{
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
+use crate::compose::RAW_INPUT_KEY;
 use crate::http::manager::{HttpHostControl, HttpHostManager};
 use crate::streams::StreamManager;
 
@@ -19,6 +20,10 @@ pub trait SlotExecutor {
         local_state: Value,
         slot_vars: Value,
     ) -> Result<Value>;
+
+    fn into_fallback(self: Box<Self>) -> Option<Box<dyn SlotExecutor + 'static>> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -32,8 +37,41 @@ impl fmt::Display for CancelledError {
 
 impl std::error::Error for CancelledError {}
 
+#[derive(Clone, Debug)]
+pub struct ComponentMetadata {
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub slots: Vec<String>,
+}
+
+impl ComponentMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.inputs.is_empty() && self.outputs.is_empty() && self.slots.is_empty()
+    }
+}
+
+struct ComponentEntry {
+    func: Arc<dyn Func>,
+    outputs: Option<Arc<Vec<String>>>,
+    metadata: Option<Arc<ComponentMetadata>>,
+}
+
+impl ComponentEntry {
+    fn new(
+        func: Arc<dyn Func>,
+        outputs: Option<Arc<Vec<String>>>,
+        metadata: Option<Arc<ComponentMetadata>>,
+    ) -> Self {
+        Self {
+            func,
+            outputs,
+            metadata,
+        }
+    }
+}
+
 struct RegistryInner {
-    funcs: HashMap<String, Arc<dyn Func>>,
+    funcs: HashMap<String, Arc<ComponentEntry>>,
     bindings: HashMap<String, String>,
 }
 
@@ -49,7 +87,7 @@ impl RegistryInner {
 #[derive(Clone)]
 struct RegistrySnapshot {
     bindings: HashMap<String, String>,
-    funcs: HashMap<String, Arc<dyn Func>>,
+    funcs: HashMap<String, Arc<ComponentEntry>>,
 }
 
 pub struct Registry {
@@ -94,8 +132,44 @@ impl Registry {
     where
         F: Func + 'static,
     {
+        self.register_entry(name, func, None, None);
+    }
+
+    pub fn register_with_outputs<F>(
+        &self,
+        name: impl Into<String>,
+        func: F,
+        outputs: Option<Arc<Vec<String>>>,
+    ) where
+        F: Func + 'static,
+    {
+        self.register_entry(name, func, outputs, None);
+    }
+
+    pub fn register_with_metadata<F>(
+        &self,
+        name: impl Into<String>,
+        func: F,
+        metadata: Option<Arc<ComponentMetadata>>,
+    ) where
+        F: Func + 'static,
+    {
+        self.register_entry(name, func, None, metadata);
+    }
+
+    fn register_entry<F>(
+        &self,
+        name: impl Into<String>,
+        func: F,
+        outputs: Option<Arc<Vec<String>>>,
+        metadata: Option<Arc<ComponentMetadata>>,
+    ) where
+        F: Func + 'static,
+    {
+        let func_arc: Arc<dyn Func> = Arc::new(func);
+        let entry = Arc::new(ComponentEntry::new(func_arc, outputs, metadata));
         let mut inner = self.inner.lock().expect("registry poisoned");
-        inner.funcs.insert(name.into(), Arc::new(func));
+        inner.funcs.insert(name.into(), entry);
     }
 
     pub fn set_binding(&self, contract: impl Into<String>, implementation: impl Into<String>) {
@@ -112,33 +186,28 @@ impl Registry {
         input: Value,
         meta: Option<Value>,
     ) -> Result<Value> {
-        let mut missing_contract_binding = false;
-        let func = {
+        let (maybe_entry, missing_contract_binding) = {
             let inner = self.inner.lock().expect("registry poisoned");
-            if let Some(entry) = inner.funcs.get(name) {
-                Some(entry.clone())
-            } else if let Some(binding) = inner.bindings.get(name) {
-                if binding != name {
-                    inner.funcs.get(binding).cloned()
-                } else {
-                    inner.funcs.get(name).cloned()
-                }
-            } else if name.starts_with("lcod://contract/") {
-                if !inner.bindings.contains_key(name) {
-                    missing_contract_binding = true;
-                }
-                None
-            } else {
-                None
-            }
+            find_entry(&inner, name)
         };
-        let Some(func) = func else {
+        let Some(entry) = maybe_entry else {
             if missing_contract_binding {
                 return Err(anyhow!("No binding for contract: {name}"));
             }
             return Err(anyhow!("function not found: {name}"));
         };
-        func.call(ctx, input, meta)
+        let func = entry.func.clone();
+        let outputs = entry.outputs.clone();
+        let mut value = if let Some(component_meta) = entry.metadata.as_ref() {
+            let prepared = sanitize_component_input(input, component_meta);
+            func.call(ctx, prepared, meta)?
+        } else {
+            func.call(ctx, input, meta)?
+        };
+        if let Some(allowed) = outputs {
+            value = enforce_outputs(value, allowed.as_ref());
+        }
+        Ok(value)
     }
 
     pub fn context(&self) -> Context {
@@ -148,6 +217,70 @@ impl Registry {
     pub fn context_with_cancellation(&self, token: Arc<AtomicBool>) -> Context {
         Context::new(self.inner.clone(), token)
     }
+}
+
+fn enforce_outputs(value: Value, allowed: &[String]) -> Value {
+    if allowed.is_empty() {
+        return value;
+    }
+    match value {
+        Value::Object(mut map) => {
+            let mut filtered = Map::new();
+            for key in allowed {
+                let entry = map.remove(key).unwrap_or(Value::Null);
+                filtered.insert(key.clone(), entry);
+            }
+            Value::Object(filtered)
+        }
+        other => other,
+    }
+}
+
+fn sanitize_component_input(value: Value, metadata: &ComponentMetadata) -> Value {
+    if metadata.inputs.is_empty() {
+        return value;
+    }
+
+    let original = match value {
+        Value::Object(map) => map,
+        other => {
+            let mut wrapper = Map::new();
+            wrapper.insert("value".to_string(), other);
+            wrapper
+        }
+    };
+
+    let mut filtered = Map::new();
+    filtered.insert(RAW_INPUT_KEY.to_string(), Value::Object(original.clone()));
+    filtered.insert("value".to_string(), Value::Object(original.clone()));
+
+    for key in &metadata.inputs {
+        let entry = original.get(key).cloned().unwrap_or(Value::Null);
+        filtered.insert(key.clone(), entry);
+    }
+
+    Value::Object(filtered)
+}
+
+fn find_entry(inner: &RegistryInner, name: &str) -> (Option<Arc<ComponentEntry>>, bool) {
+    let mut missing_contract_binding = false;
+    let entry = if let Some(entry) = inner.funcs.get(name) {
+        Some(entry.clone())
+    } else if let Some(binding) = inner.bindings.get(name) {
+        if binding != name {
+            inner.funcs.get(binding).cloned()
+        } else {
+            inner.funcs.get(name).cloned()
+        }
+    } else if name.starts_with("lcod://contract/") {
+        if !inner.bindings.contains_key(name) {
+            missing_contract_binding = true;
+        }
+        None
+    } else {
+        None
+    };
+    (entry, missing_contract_binding)
 }
 
 pub struct Context {
@@ -179,33 +312,28 @@ impl Context {
 
     pub fn call(&mut self, name: &str, input: Value, meta: Option<Value>) -> Result<Value> {
         self.ensure_not_cancelled()?;
-        let mut missing_contract_binding = false;
-        let func = {
+        let (maybe_entry, missing_contract_binding) = {
             let inner = self.registry.lock().expect("registry poisoned");
-            if let Some(entry) = inner.funcs.get(name) {
-                Some(entry.clone())
-            } else if let Some(binding) = inner.bindings.get(name) {
-                if binding != name {
-                    inner.funcs.get(binding).cloned()
-                } else {
-                    inner.funcs.get(name).cloned()
-                }
-            } else if name.starts_with("lcod://contract/") {
-                if !inner.bindings.contains_key(name) {
-                    missing_contract_binding = true;
-                }
-                None
-            } else {
-                None
-            }
+            find_entry(&inner, name)
         };
-        let Some(func) = func else {
+        let Some(entry) = maybe_entry else {
             if missing_contract_binding {
                 return Err(anyhow!("No binding for contract: {name}"));
             }
             return Err(anyhow!("function not found: {name}"));
         };
-        func.call(self, input, meta)
+        let func = entry.func.clone();
+        let outputs = entry.outputs.clone();
+        let mut value = if let Some(component_meta) = entry.metadata.as_ref() {
+            let prepared = sanitize_component_input(input, component_meta);
+            func.call(self, prepared, meta)?
+        } else {
+            func.call(self, input, meta)?
+        };
+        if let Some(allowed) = outputs {
+            value = enforce_outputs(value, allowed.as_ref());
+        }
+        Ok(value)
     }
 
     pub fn replace_run_slot_handler(

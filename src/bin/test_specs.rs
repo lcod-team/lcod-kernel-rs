@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use lcod_kernel_rs::compose::parse_compose;
 use lcod_kernel_rs::{
-    register_core, register_demo_impls, register_flow, register_tooling, run_compose,
-    Context as KernelContext, Registry,
+    register_compose_contracts, register_core, register_demo_impls, register_flow,
+    register_tooling, run_compose, Context as KernelContext, Registry,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -66,6 +66,7 @@ fn run_test(name: &str, compose_path: &Path) -> Result<TestOutcome> {
 
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     register_core(&registry);
     register_demo_impls(&registry);
     register_tooling(&registry);

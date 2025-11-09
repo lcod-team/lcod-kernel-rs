@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::compose::SlotNotFoundError;
 use crate::registry::{Context, Registry};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Number, Value};
@@ -43,7 +44,13 @@ pub fn flow_check_abort(ctx: &mut Context, _input: Value, _meta: Option<Value>) 
 pub fn flow_if(ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
     let cond = input.get("cond").map_or(false, |value| is_truthy(value));
     let slot_name = if cond { "then" } else { "else" };
-    ctx.run_slot(slot_name, None, None)
+    match ctx.run_slot(slot_name, None, None) {
+        Ok(value) => Ok(value),
+        Err(err) => match err.downcast::<SlotNotFoundError>() {
+            Ok(_) => Ok(Value::Object(Map::new())),
+            Err(err) => Err(err),
+        },
+    }
 }
 
 fn has_slot(meta: &Option<Value>, name: &str) -> bool {

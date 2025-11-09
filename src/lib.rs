@@ -1,4 +1,5 @@
 pub mod compose;
+pub mod compose_contracts;
 pub mod core;
 pub mod demo;
 pub mod flow;
@@ -9,6 +10,7 @@ pub mod streams;
 pub mod tooling;
 
 pub use compose::run_compose;
+pub use compose_contracts::register_compose_contracts;
 pub use core::register_core;
 pub use flow::register_flow;
 pub use http::register_http_contracts;

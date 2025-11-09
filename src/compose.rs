@@ -17,6 +17,7 @@ const OPTIONAL_FLAG: &str = "__lcod_optional__";
 const STATE_SENTINEL: &str = "__lcod_state__";
 const RESULT_SENTINEL: &str = "__lcod_result__";
 const SCRIPT_CONTRACT_ID: &str = "lcod://tooling/script@1";
+pub const RAW_INPUT_KEY: &str = "__lcod_input__";
 
 #[derive(Copy, Clone)]
 enum MappingKind {
@@ -640,16 +641,35 @@ fn normalize_children(
     map
 }
 
+#[derive(Debug)]
+pub(crate) struct SlotNotFoundError {
+    slot: String,
+}
+
+impl std::fmt::Display for SlotNotFoundError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "slot '{}' not found", self.slot)
+    }
+}
+
+impl std::error::Error for SlotNotFoundError {}
+
 struct ComposeSlotHandler {
     slots: HashMap<String, Vec<Step>>,
     parent_state: Map<String, Value>,
+    fallback: Option<Box<dyn SlotExecutor + 'static>>,
 }
 
 impl ComposeSlotHandler {
-    fn new(slots: HashMap<String, Vec<Step>>, parent_state: &Map<String, Value>) -> Self {
+    fn new(
+        slots: HashMap<String, Vec<Step>>,
+        parent_state: &Map<String, Value>,
+        fallback: Option<Box<dyn SlotExecutor + 'static>>,
+    ) -> Self {
         Self {
             slots,
             parent_state: parent_state.clone(),
+            fallback,
         }
     }
 }
@@ -667,7 +687,8 @@ impl SlotExecutor for ComposeSlotHandler {
         } else {
             value_to_object(local_state)
         };
-        let slot_map = value_to_object(slot_vars);
+        let slot_payload = slot_vars;
+        let slot_map = value_to_object(slot_payload.clone());
         let steps_opt = self
             .slots
             .get(name)
@@ -682,10 +703,25 @@ impl SlotExecutor for ComposeSlotHandler {
             })
             .or_else(|| self.slots.get("children"));
         let Some(steps) = steps_opt else {
-            return Ok(Value::Object(local_map));
+            if let Some(fallback) = self.fallback.as_mut() {
+                return fallback.run_slot(ctx, name, Value::Object(local_map), slot_payload);
+            }
+            return Err(SlotNotFoundError {
+                slot: name.to_string(),
+            }
+            .into());
         };
-        let result = run_steps(ctx, steps, local_map, &slot_map)?;
-        Ok(Value::Object(result))
+        let saved_fallback = std::mem::replace(&mut self.fallback, None);
+        let previous_handler = ctx.replace_run_slot_handler(saved_fallback);
+        let result = run_steps(ctx, steps, local_map, &slot_map);
+        let restored = ctx.replace_run_slot_handler(previous_handler);
+        self.fallback = restored;
+        let result_map = result?;
+        Ok(Value::Object(result_map))
+    }
+
+    fn into_fallback(self: Box<Self>) -> Option<Box<dyn SlotExecutor + 'static>> {
+        self.fallback
     }
 }
 
@@ -898,9 +934,10 @@ fn run_steps(
         let slot_map = normalize_children(step.children.as_ref(), step.slots.as_ref());
         let meta = build_meta(step, slot, &slot_map);
 
+        let inherited = ctx.replace_run_slot_handler(None);
         let slot_handler: Box<dyn SlotExecutor + 'static> =
-            Box::new(ComposeSlotHandler::new(slot_map.clone(), &state));
-        let previous = ctx.replace_run_slot_handler(Some(slot_handler));
+            Box::new(ComposeSlotHandler::new(slot_map.clone(), &state, inherited));
+        let _ = ctx.replace_run_slot_handler(Some(slot_handler));
 
         let input_keys = match &input_value {
             Value::Object(map) => {
@@ -941,6 +978,8 @@ fn run_steps(
         let result = ctx.call(&step.call, input_value, meta);
         ctx.pop_scope();
 
+        let handler = ctx.replace_run_slot_handler(None);
+        let previous = handler.and_then(|h| h.into_fallback());
         ctx.replace_run_slot_handler(previous);
 
         let duration_ms = started_at.elapsed().as_secs_f64() * 1000.0;
@@ -983,7 +1022,11 @@ fn run_steps(
 }
 
 pub fn run_compose(ctx: &mut Context, steps: &[Step], initial_state: Value) -> Result<Value> {
-    let state_map = initial_state.as_object().cloned().unwrap_or_default();
+    let mut state_map = match &initial_state {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    state_map.insert(RAW_INPUT_KEY.to_string(), initial_state);
     let final_state = run_steps(ctx, steps, state_map, &Map::new())?;
     Ok(Value::Object(final_state))
 }

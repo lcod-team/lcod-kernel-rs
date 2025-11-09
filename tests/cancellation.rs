@@ -5,6 +5,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use lcod_kernel_rs::compose::{parse_compose, run_compose};
+use lcod_kernel_rs::compose_contracts::register_compose_contracts;
 use lcod_kernel_rs::flow::register_flow;
 use lcod_kernel_rs::{CancelledError, Context as KernelContext, Registry};
 
@@ -12,6 +13,7 @@ use lcod_kernel_rs::{CancelledError, Context as KernelContext, Registry};
 fn run_compose_aborts_when_flag_pre_set() {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
     registry.register(
         "lcod://test/noop@1",
         |_ctx: &mut KernelContext, _input, _meta| Ok(json!(null)),
@@ -33,6 +35,7 @@ fn run_compose_aborts_when_flag_pre_set() {
 fn flow_check_abort_stops_execution_when_cancelled() -> Result<()> {
     let registry = Registry::new();
     register_flow(&registry);
+    register_compose_contracts(&registry);
 
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = Arc::clone(&counter);
