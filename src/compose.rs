@@ -466,6 +466,11 @@ fn resolve_value(value: &Value, state: &Map<String, Value>, slot: &Map<String, V
                 .collect(),
         ),
         Value::Object(map) => {
+            if map.len() == 1
+                && (map.contains_key(STATE_SENTINEL) || map.contains_key(RAW_INPUT_KEY))
+            {
+                return Value::Object(state.clone());
+            }
             let mut resolved = Map::new();
             for (key, val) in map {
                 resolved.insert(key.clone(), resolve_value(val, state, slot));
