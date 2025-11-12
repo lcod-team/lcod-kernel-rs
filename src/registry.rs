@@ -224,6 +224,11 @@ fn sanitize_component_input(value: Value, metadata: &ComponentMetadata) -> (Valu
         }
     };
 
+    if metadata.inputs.is_empty() {
+        let snapshot = original.clone();
+        return (Value::Object(snapshot), Value::Object(original));
+    }
+
     let mut filtered = Map::new();
     for key in &metadata.inputs {
         if let Some(entry) = original.get(key) {

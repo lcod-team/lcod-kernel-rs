@@ -181,10 +181,7 @@ fn string_split_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>)
     if separator.is_empty() {
         return Err(anyhow!("`separator` must not be empty"));
     }
-    let trim = input
-        .get("trim")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let trim = input.get("trim").and_then(Value::as_bool).unwrap_or(false);
     let remove_empty = input
         .get("removeEmpty")
         .and_then(Value::as_bool)
@@ -220,10 +217,7 @@ fn string_trim_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) 
         .get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("`text` must be a string"))?;
-    let mode = input
-        .get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("both");
+    let mode = input.get("mode").and_then(Value::as_str).unwrap_or("both");
     let trimmed = match mode {
         "start" => text.trim_start().to_string(),
         "end" => text.trim_end().to_string(),
@@ -278,12 +272,7 @@ mod tests {
         let registry = Registry::new();
         register_string(&registry);
         let mut ctx = registry.context();
-        let both = string_trim_contract(
-            &mut ctx,
-            json!({ "text": "  hello  " }),
-            None,
-        )
-        .unwrap();
+        let both = string_trim_contract(&mut ctx, json!({ "text": "  hello  " }), None).unwrap();
         assert_eq!(both["value"], json!("hello"));
         let start = string_trim_contract(
             &mut ctx,

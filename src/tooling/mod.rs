@@ -52,6 +52,10 @@ fn register_std_helpers(registry: &Registry) {
         value_is_defined_helper,
     );
     registry.register(
+        "lcod://tooling/value/is_string_nonempty@0.1.0",
+        value_is_string_nonempty_helper,
+    );
+    registry.register(
         "lcod://contract/tooling/string/ensure_trailing_newline@1",
         string_ensure_trailing_newline_helper,
     );
@@ -108,6 +112,7 @@ fn register_std_helpers(registry: &Registry) {
     registry.register("lcod://tooling/object/clone@0.1.0", object_clone_helper);
     registry.register("lcod://tooling/object/set@0.1.0", object_set_helper);
     registry.register("lcod://tooling/object/has@0.1.0", object_has_helper);
+    registry.register("lcod://tooling/object/entries@0.1.0", object_entries_helper);
     registry.register(
         "lcod://tooling/json/stable_stringify@0.1.0",
         json_stable_stringify_helper,
@@ -129,7 +134,11 @@ struct RegistryNormalizeResult {
     warnings: Vec<Value>,
 }
 
-fn registry_normalize_source(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+fn registry_normalize_source(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
     let entry_value = input
         .get("entry")
         .cloned()
@@ -141,7 +150,11 @@ fn registry_normalize_source(_ctx: &mut Context, input: Value, _meta: Option<Val
     }))
 }
 
-fn registry_normalize_sources(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+fn registry_normalize_sources(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
     let entries_value = input.get("entries").cloned().unwrap_or(Value::Null);
     let entries = entries_value.as_array().cloned().unwrap_or_default();
     let mut normalized_entries = Vec::new();
@@ -178,7 +191,8 @@ fn normalize_registry_entry(entry_value: &Value) -> RegistryNormalizeResult {
         };
     };
 
-    let registry_type = read_trimmed_string(entry_map.get("type")).unwrap_or_else(|| "path".to_owned());
+    let registry_type =
+        read_trimmed_string(entry_map.get("type")).unwrap_or_else(|| "path".to_owned());
     let mut normalized = Map::new();
     normalized.insert("id".to_string(), Value::String(registry_id.clone()));
     normalized.insert("type".to_string(), Value::String(registry_type.clone()));
@@ -1102,6 +1116,19 @@ fn value_is_defined_helper(
     Ok(json!({ "ok": is_defined }))
 }
 
+fn value_is_string_nonempty_helper(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let ok = input
+        .get("value")
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    Ok(json!({ "ok": ok }))
+}
+
 fn string_ensure_trailing_newline_helper(
     _ctx: &mut Context,
     input: Value,
@@ -1429,6 +1456,20 @@ fn object_has_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> 
         "hasKey": value_ref.is_some(),
         "value": value_ref.unwrap_or(Value::Null)
     }))
+}
+
+fn object_entries_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let entries = input
+        .get("value")
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| Value::Array(vec![Value::String(key.clone()), value.clone()]))
+                .collect::<Vec<Value>>()
+        })
+        .unwrap_or_default();
+    Ok(json!({ "entries": Value::Array(entries) }))
 }
 
 fn json_stable_stringify_helper(

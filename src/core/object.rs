@@ -189,7 +189,11 @@ fn object_set_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     Ok(json!({ "object": target, "created": !existed }))
 }
 
-fn object_entries_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+fn object_entries_contract(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
     let source = input
         .get("object")
         .cloned()
@@ -197,7 +201,10 @@ fn object_entries_contract(_ctx: &mut Context, input: Value, _meta: Option<Value
     let mut entries = Vec::new();
     if let Some(map) = source.as_object() {
         for (key, value) in map {
-            entries.push(Value::Array(vec![Value::String(key.clone()), value.clone()]));
+            entries.push(Value::Array(vec![
+                Value::String(key.clone()),
+                value.clone(),
+            ]));
         }
     }
     Ok(json!({ "entries": Value::Array(entries) }))

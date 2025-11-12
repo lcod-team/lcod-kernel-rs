@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -5,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use toml::Value as TomlValue;
 
 use crate::core;
@@ -86,6 +88,10 @@ pub fn register_resolver_axioms(registry: &Registry) {
         "lcod://contract/tooling/resolve-dependency@1",
         resolve_dependency_contract,
     );
+    registry.register(
+        "lcod://contract/tooling/resolver/resolve_dependencies@1",
+        resolve_dependencies_contract,
+    );
 }
 
 fn alias_contract(registry: &Registry, contract_id: &'static str, alias_id: &'static str) {
@@ -131,6 +137,272 @@ fn resolve_dependency_contract(
             "contract/tooling/resolve-dependency@1 is deprecated; use the resolver compose pipeline instead."
         ]
     }))
+}
+
+fn resolve_dependencies_contract(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> Result<Value> {
+    let project_root = value_as_path(&input, "projectPath")
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from("."));
+
+    let normalized_config = input
+        .get("normalizedConfig")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let raw_config = input
+        .get("config")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+
+    let mut sources = collect_sources(normalized_config.get("sources"));
+    if sources.is_empty() {
+        sources = collect_sources(raw_config.get("sources"));
+    }
+
+    let root_descriptor = input
+        .get("rootDescriptor")
+        .cloned()
+        .ok_or_else(|| anyhow!("resolve_dependencies contract requires rootDescriptor"))?;
+    let root_descriptor_text = input
+        .get("rootDescriptorText")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let root_id = root_descriptor
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| input.get("rootId").and_then(Value::as_str))
+        .unwrap_or("lcod://root/unknown@0.0.0")
+        .to_string();
+
+    let mut visited = HashSet::new();
+    let mut descriptor_cache = HashMap::new();
+
+    let dependency_ids = parse_requires(&root_descriptor);
+    let mut dependency_nodes = Vec::new();
+    for dep_id in dependency_ids {
+        let node = resolve_dependency_node(
+            &dep_id,
+            &project_root,
+            &sources,
+            &mut visited,
+            &mut descriptor_cache,
+        )?;
+        dependency_nodes.push(node);
+    }
+
+    let warnings = collect_warning_buckets(&input);
+    let warnings_value = Value::Array(warnings.iter().map(|w| Value::String(w.clone())).collect());
+    let root_integrity = if root_descriptor_text.is_empty() {
+        Value::Null
+    } else {
+        Value::String(compute_integrity(&root_descriptor_text))
+    };
+
+    let mut root_map = Map::new();
+    root_map.insert("id".to_string(), Value::String(root_id.clone()));
+    root_map.insert("requested".to_string(), Value::String(root_id.clone()));
+    root_map.insert("resolved".to_string(), Value::String(root_id.clone()));
+    root_map.insert(
+        "source".to_string(),
+        json!({
+            "type": "path",
+            "path": project_root.to_string_lossy()
+        }),
+    );
+    root_map.insert("dependencies".to_string(), Value::Array(dependency_nodes));
+    root_map.insert("integrity".to_string(), root_integrity);
+
+    let resolver_result = json!({
+        "root": Value::Object(root_map),
+        "warnings": warnings_value.clone()
+    });
+
+    Ok(json!({
+        "resolverResult": resolver_result,
+        "warnings": warnings_value
+    }))
+}
+
+fn collect_sources(value: Option<&Value>) -> HashMap<String, Value> {
+    value
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(k, v)| {
+                    if v.is_object() {
+                        Some((k.clone(), v.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn collect_warning_buckets(input: &Value) -> Vec<String> {
+    let buckets = [
+        "warnings",
+        "loadWarnings",
+        "indexWarnings",
+        "registrationWarnings",
+        "pointerWarnings",
+    ];
+    let mut collected = Vec::new();
+    for key in buckets {
+        if let Some(Value::Array(items)) = input.get(key) {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    if !text.is_empty() {
+                        collected.push(text.to_string());
+                    }
+                }
+            }
+        }
+    }
+    collected
+}
+
+fn resolve_dependency_node(
+    dep_id: &str,
+    project_root: &Path,
+    sources: &HashMap<String, Value>,
+    visited: &mut HashSet<String>,
+    cache: &mut HashMap<String, (Value, String)>,
+) -> Result<Value> {
+    if !visited.insert(dep_id.to_string()) {
+        return Err(anyhow!("dependency cycle detected for {dep_id}"));
+    }
+
+    let spec = sources
+        .get(dep_id)
+        .ok_or_else(|| anyhow!("no source specified for dependency {dep_id}"))?;
+    let (descriptor, descriptor_text) =
+        read_descriptor_for_spec(dep_id, spec, project_root, cache)?;
+    let child_ids = parse_requires(&descriptor);
+    let mut children = Vec::new();
+    for child_id in child_ids {
+        let node = resolve_dependency_node(&child_id, project_root, sources, visited, cache)?;
+        children.push(node);
+    }
+    visited.remove(dep_id);
+
+    let mut node = Map::new();
+    node.insert("id".to_string(), Value::String(dep_id.to_string()));
+    node.insert("requested".to_string(), Value::String(dep_id.to_string()));
+    node.insert("resolved".to_string(), Value::String(dep_id.to_string()));
+    node.insert(
+        "source".to_string(),
+        json!({
+            "type": "registry",
+            "reference": dep_id
+        }),
+    );
+    node.insert("dependencies".to_string(), Value::Array(children));
+    node.insert(
+        "integrity".to_string(),
+        Value::String(compute_integrity(&descriptor_text)),
+    );
+    Ok(Value::Object(node))
+}
+
+fn read_descriptor_for_spec(
+    dep_id: &str,
+    spec: &Value,
+    project_root: &Path,
+    cache: &mut HashMap<String, (Value, String)>,
+) -> Result<(Value, String)> {
+    let spec_obj = spec
+        .as_object()
+        .ok_or_else(|| anyhow!("source entry for {dep_id} must be an object"))?;
+    let source_type = spec_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("path");
+
+    let descriptor_dir = match source_type {
+        "path" => {
+            let rel = spec_obj
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("path source for {dep_id} missing `path`"))?;
+            project_root.join(rel)
+        }
+        "git" => {
+            let url = spec_obj
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("git source for {dep_id} missing `url`"))?;
+            PathBuf::from(url)
+        }
+        other => {
+            return Err(anyhow!(
+                "unsupported source type `{}` for dependency {}",
+                other,
+                dep_id
+            ))
+        }
+    };
+
+    let descriptor_path = descriptor_dir.join("lcp.toml");
+    let cache_key = descriptor_path
+        .canonicalize()
+        .unwrap_or(descriptor_path.clone())
+        .to_string_lossy()
+        .to_string();
+    if let Some(entry) = cache.get(&cache_key) {
+        return Ok(entry.clone());
+    }
+
+    let descriptor_text = fs::read_to_string(&descriptor_path).with_context(|| {
+        format!(
+            "reading descriptor for {} at {}",
+            dep_id,
+            descriptor_path.display()
+        )
+    })?;
+    let toml_value: TomlValue = descriptor_text
+        .parse()
+        .with_context(|| format!("parsing descriptor for {}", dep_id))?;
+    let descriptor_json =
+        serde_json::to_value(toml_value).context("serializing descriptor to JSON")?;
+    cache.insert(
+        cache_key.clone(),
+        (descriptor_json.clone(), descriptor_text.clone()),
+    );
+    Ok((descriptor_json, descriptor_text))
+}
+
+fn parse_requires(descriptor: &Value) -> Vec<String> {
+    descriptor
+        .get("deps")
+        .and_then(|deps| deps.get("requires"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn compute_integrity(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("sha256-{}", hex::encode(hasher.finalize()))
+}
+
+fn value_as_path(value: &Value, key: &str) -> Result<PathBuf> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("missing `{}`", key))
 }
 
 fn toml_stringify_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {

@@ -25,7 +25,11 @@ fn kind_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> anyh
     Ok(json!({ "kind": kind }))
 }
 
-fn equals_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> anyhow::Result<Value> {
+fn equals_contract(
+    _ctx: &mut Context,
+    input: Value,
+    _meta: Option<Value>,
+) -> anyhow::Result<Value> {
     let left = input.get("left").cloned().unwrap_or(Value::Null);
     let right = input.get("right").cloned().unwrap_or(Value::Null);
     Ok(json!({ "equal": left == right }))
