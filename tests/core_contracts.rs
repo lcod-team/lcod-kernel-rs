@@ -5,6 +5,7 @@ use tempfile::tempdir;
 
 use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::{Context, Registry};
+use serde_json::Value;
 
 fn registry_with_core() -> Registry {
     let registry = Registry::new();
@@ -134,6 +135,31 @@ fn fs_list_directory_entries() -> Result<()> {
 }
 
 #[test]
+fn fs_stat_reports_exists_and_missing() -> Result<()> {
+    let mut ctx = context();
+    let dir = tempdir()?;
+    let file_path = dir.path().join("data.txt");
+    std::fs::write(&file_path, "demo")?;
+
+    let existing = ctx.call(
+        "lcod://contract/core/fs/stat@1",
+        json!({ "path": file_path }),
+        None,
+    )?;
+    assert_eq!(existing["exists"], json!(true));
+    assert_eq!(existing["isFile"], json!(true));
+
+    let missing_path = dir.path().join("missing.txt");
+    let missing = ctx.call(
+        "lcod://contract/core/fs/stat@1",
+        json!({ "path": missing_path }),
+        None,
+    )?;
+    assert_eq!(missing["exists"], json!(false));
+    Ok(())
+}
+
+#[test]
 fn hash_sha256_computes_digest() -> Result<()> {
     let mut ctx = context();
     let res = ctx.call(
@@ -154,6 +180,39 @@ fn hash_sha256_computes_digest() -> Result<()> {
     );
     assert_eq!(res.get("bytes"), Some(&json!(11)));
 
+    Ok(())
+}
+
+#[test]
+fn env_get_reads_value_and_falls_back() -> Result<()> {
+    let mut ctx = context();
+    std::env::set_var("LCOD_TEST_ENV_CORE", "present");
+    let hit = ctx.call(
+        "lcod://contract/core/env/get@1",
+        json!({ "name": "LCOD_TEST_ENV_CORE" }),
+        None,
+    )?;
+    assert_eq!(hit["value"], json!("present"));
+    assert_eq!(hit["exists"], json!(true));
+
+    std::env::remove_var("LCOD_TEST_ENV_MISSING");
+    let miss = ctx.call(
+        "lcod://contract/core/env/get@1",
+        json!({ "name": "LCOD_TEST_ENV_MISSING", "default": "fallback" }),
+        None,
+    )?;
+    assert_eq!(miss["value"], json!("fallback"));
+    assert_eq!(miss["exists"], json!(false));
+
+    Ok(())
+}
+
+#[test]
+fn runtime_info_returns_cwd_and_tmpdir() -> Result<()> {
+    let mut ctx = context();
+    let info = ctx.call("lcod://contract/core/runtime/info@1", json!({}), None)?;
+    assert!(info["cwd"].as_str().is_some());
+    assert!(info["tmpDir"].as_str().is_some());
     Ok(())
 }
 
@@ -252,6 +311,19 @@ fn object_get_and_set() -> Result<()> {
 }
 
 #[test]
+fn object_entries_returns_pairs() -> Result<()> {
+    let mut ctx = context();
+    let res = ctx.call(
+        "lcod://contract/core/object/entries@1",
+        json!({ "object": { "a": 1, "b": "x" } }),
+        None,
+    )?;
+    let entries = res.get("entries").and_then(Value::as_array).unwrap();
+    assert_eq!(entries.len(), 2);
+    Ok(())
+}
+
+#[test]
 fn object_merge_supports_deep_merge() -> Result<()> {
     let mut ctx = context();
     let res = ctx.call(
@@ -308,5 +380,73 @@ fn json_encode_decode_roundtrip() -> Result<()> {
         None,
     )?;
     assert_eq!(decoded["value"]["a"], json!(1));
+    Ok(())
+}
+
+#[test]
+fn value_kind_reports_expected_labels() -> Result<()> {
+    let mut ctx = context();
+    let null_kind = ctx.call("lcod://contract/core/value/kind@1", json!({}), None)?;
+    assert_eq!(null_kind["kind"], json!("null"));
+
+    let str_kind = ctx.call(
+        "lcod://contract/core/value/kind@1",
+        json!({ "value": "demo" }),
+        None,
+    )?;
+    assert_eq!(str_kind["kind"], json!("string"));
+
+    let num_kind = ctx.call(
+        "lcod://contract/core/value/kind@1",
+        json!({ "value": 42 }),
+        None,
+    )?;
+    assert_eq!(num_kind["kind"], json!("number"));
+
+    let arr_kind = ctx.call(
+        "lcod://contract/core/value/kind@1",
+        json!({ "value": [1, 2, 3] }),
+        None,
+    )?;
+    assert_eq!(arr_kind["kind"], json!("array"));
+
+    Ok(())
+}
+
+#[test]
+fn number_trunc_truncates_toward_zero() -> Result<()> {
+    let mut ctx = context();
+    let pos = ctx.call(
+        "lcod://contract/core/number/trunc@1",
+        json!({ "value": 3.9 }),
+        None,
+    )?;
+    assert_eq!(pos["value"], json!(3));
+
+    let neg = ctx.call(
+        "lcod://contract/core/number/trunc@1",
+        json!({ "value": -4.2 }),
+        None,
+    )?;
+    assert_eq!(neg["value"], json!(-4));
+
+    Ok(())
+}
+
+#[test]
+fn value_equals_compares_deep_values() -> Result<()> {
+    let mut ctx = context();
+    let equal = ctx.call(
+        "lcod://contract/core/value/equals@1",
+        json!({ "left": { "a": [1, 2] }, "right": { "a": [1, 2] } }),
+        None,
+    )?;
+    assert_eq!(equal["equal"], json!(true));
+    let different = ctx.call(
+        "lcod://contract/core/value/equals@1",
+        json!({ "left": { "a": [1, 2] }, "right": { "a": [2, 1] } }),
+        None,
+    )?;
+    assert_eq!(different["equal"], json!(false));
     Ok(())
 }

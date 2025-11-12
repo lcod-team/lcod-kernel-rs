@@ -6,6 +6,7 @@ use crate::registry::{Context, Registry};
 const CONTRACT_GET: &str = "lcod://contract/core/object/get@1";
 const CONTRACT_SET: &str = "lcod://contract/core/object/set@1";
 const CONTRACT_MERGE: &str = "lcod://contract/core/object/merge@1";
+const CONTRACT_ENTRIES: &str = "lcod://contract/core/object/entries@1";
 const AXIOM_GET: &str = "lcod://axiom/object/get@1";
 const AXIOM_SET: &str = "lcod://axiom/object/set@1";
 const AXIOM_MERGE: &str = "lcod://axiom/object/merge@1";
@@ -14,6 +15,7 @@ pub fn register_object(registry: &Registry) {
     registry.register(CONTRACT_GET, object_get_contract);
     registry.register(CONTRACT_SET, object_set_contract);
     registry.register(CONTRACT_MERGE, object_merge_contract);
+    registry.register(CONTRACT_ENTRIES, object_entries_contract);
     registry.set_binding(AXIOM_GET, CONTRACT_GET);
     registry.set_binding(AXIOM_SET, CONTRACT_SET);
     registry.set_binding(AXIOM_MERGE, CONTRACT_MERGE);
@@ -185,6 +187,20 @@ fn object_set_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -
     };
     set_path_recursive(&mut target, &path, value, create_missing)?;
     Ok(json!({ "object": target, "created": !existed }))
+}
+
+fn object_entries_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let source = input
+        .get("object")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let mut entries = Vec::new();
+    if let Some(map) = source.as_object() {
+        for (key, value) in map {
+            entries.push(Value::Array(vec![Value::String(key.clone()), value.clone()]));
+        }
+    }
+    Ok(json!({ "entries": Value::Array(entries) }))
 }
 
 fn path_exists(value: &Value, segments: &[PathSegment]) -> bool {

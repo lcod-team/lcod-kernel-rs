@@ -27,6 +27,10 @@ pub use logging::{
 };
 
 const CONTRACT_TEST_CHECKER: &str = "lcod://tooling/test_checker@1";
+const CONTRACT_REGISTRY_NORMALIZE_SOURCE: &str =
+    "lcod://contract/tooling/registry/normalize_source@1";
+const CONTRACT_REGISTRY_NORMALIZE_SOURCES: &str =
+    "lcod://contract/tooling/registry/normalize_sources@1";
 
 pub fn register_tooling(registry: &Registry) {
     registry.register(CONTRACT_TEST_CHECKER, test_checker);
@@ -110,6 +114,175 @@ fn register_std_helpers(registry: &Registry) {
     );
     registry.register("lcod://tooling/hash/to_key@0.1.0", hash_to_key_helper);
     registry.register("lcod://tooling/queue/bfs@0.1.0", queue_bfs_helper);
+    registry.register(
+        CONTRACT_REGISTRY_NORMALIZE_SOURCE,
+        registry_normalize_source,
+    );
+    registry.register(
+        CONTRACT_REGISTRY_NORMALIZE_SOURCES,
+        registry_normalize_sources,
+    );
+}
+
+struct RegistryNormalizeResult {
+    entry: Option<Value>,
+    warnings: Vec<Value>,
+}
+
+fn registry_normalize_source(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let entry_value = input
+        .get("entry")
+        .cloned()
+        .ok_or_else(|| anyhow!("`entry` is required"))?;
+    let result = normalize_registry_entry(&entry_value);
+    Ok(json!({
+        "entry": result.entry.unwrap_or(Value::Null),
+        "warnings": result.warnings
+    }))
+}
+
+fn registry_normalize_sources(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let entries_value = input.get("entries").cloned().unwrap_or(Value::Null);
+    let entries = entries_value.as_array().cloned().unwrap_or_default();
+    let mut normalized_entries = Vec::new();
+    let mut warnings = Vec::new();
+    for entry in entries {
+        let result = normalize_registry_entry(&entry);
+        warnings.extend(result.warnings);
+        if let Some(value) = result.entry {
+            normalized_entries.push(value);
+        }
+    }
+    Ok(json!({
+        "entries": normalized_entries,
+        "warnings": warnings
+    }))
+}
+
+fn normalize_registry_entry(entry_value: &Value) -> RegistryNormalizeResult {
+    let Some(entry_map) = entry_value.as_object() else {
+        return RegistryNormalizeResult {
+            entry: None,
+            warnings: Vec::new(),
+        };
+    };
+
+    let mut warnings = Vec::new();
+    let Some(registry_id) = read_trimmed_string(entry_map.get("id")) else {
+        warnings.push(Value::String(
+            "registry source entry is missing an id".to_owned(),
+        ));
+        return RegistryNormalizeResult {
+            entry: None,
+            warnings,
+        };
+    };
+
+    let registry_type = read_trimmed_string(entry_map.get("type")).unwrap_or_else(|| "path".to_owned());
+    let mut normalized = Map::new();
+    normalized.insert("id".to_string(), Value::String(registry_id.clone()));
+    normalized.insert("type".to_string(), Value::String(registry_type.clone()));
+
+    if let Some(priority_value) = entry_map.get("priority").and_then(|v| v.as_f64()) {
+        if priority_value.is_finite() {
+            let truncated = priority_value.trunc() as i64;
+            normalized.insert("priority".to_string(), Value::Number(truncated.into()));
+        }
+    }
+
+    if let Some(defaults) = entry_map
+        .get("defaults")
+        .and_then(|v| v.as_object())
+        .cloned()
+    {
+        normalized.insert("defaults".to_string(), Value::Object(defaults));
+    }
+
+    if let Some(registry_path) = read_trimmed_string(entry_map.get("registryPath")) {
+        normalized.insert("registryPath".to_string(), Value::String(registry_path));
+    }
+
+    if let Some(packages_path) = read_trimmed_string(entry_map.get("packagesPath")) {
+        normalized.insert("packagesPath".to_string(), Value::String(packages_path));
+    }
+
+    let normalized_entry = match registry_type.as_str() {
+        "path" => {
+            if let Some(path) = read_trimmed_string(entry_map.get("path")) {
+                normalized.insert("path".to_string(), Value::String(path));
+                Some(Value::Object(normalized))
+            } else {
+                warnings.push(Value::String(format!(
+                    "registry source \"{}\" (type=path) is missing \"path\"",
+                    registry_id
+                )));
+                None
+            }
+        }
+        "jsonl" => {
+            let path = read_trimmed_string(entry_map.get("path"));
+            let inline_jsonl = read_trimmed_string(entry_map.get("jsonl"));
+            if let Some(path) = path {
+                normalized.insert("path".to_string(), Value::String(path));
+                Some(Value::Object(normalized))
+            } else if let Some(jsonl_text) = inline_jsonl {
+                normalized.insert("jsonl".to_string(), Value::String(jsonl_text));
+                Some(Value::Object(normalized))
+            } else {
+                warnings.push(Value::String(format!(
+                    "registry source \"{}\" (type=jsonl) is missing \"path\" or inline \"jsonl\" content",
+                    registry_id
+                )));
+                None
+            }
+        }
+        "inline" => {
+            let lines = entry_map
+                .get("lines")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_object().cloned())
+                        .map(Value::Object)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if lines.is_empty() {
+                warnings.push(Value::String(format!(
+                    "registry source \"{}\" (type=inline) is missing \"lines\" entries",
+                    registry_id
+                )));
+                None
+            } else {
+                normalized.insert("lines".to_string(), Value::Array(lines));
+                if let Some(jsonl_text) = read_trimmed_string(entry_map.get("jsonl")) {
+                    normalized.insert("jsonl".to_string(), Value::String(jsonl_text));
+                }
+                Some(Value::Object(normalized))
+            }
+        }
+        other => {
+            warnings.push(Value::String(format!(
+                "registry source \"{}\" has unsupported type \"{}\"",
+                registry_id, other
+            )));
+            None
+        }
+    };
+
+    RegistryNormalizeResult {
+        entry: normalized_entry,
+        warnings,
+    }
+}
+
+fn read_trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
 }
 
 fn runtime_root() -> Option<PathBuf> {
@@ -517,7 +690,6 @@ fn build_helper_definitions() -> Vec<ResolverHelperDef> {
 fn gather_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-
 
     if let Some(runtime_resolver) = runtime_resolver_root() {
         push_candidate_if_exists(&mut seen, &mut out, CandidateKind::Root, runtime_resolver);

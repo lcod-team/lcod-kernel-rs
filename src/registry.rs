@@ -6,9 +6,8 @@ use std::sync::{
 };
 
 use anyhow::{anyhow, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
-use crate::compose::RAW_INPUT_KEY;
 use crate::http::manager::{HttpHostControl, HttpHostManager};
 use crate::streams::StreamManager;
 
@@ -186,28 +185,7 @@ impl Registry {
         input: Value,
         meta: Option<Value>,
     ) -> Result<Value> {
-        let (maybe_entry, missing_contract_binding) = {
-            let inner = self.inner.lock().expect("registry poisoned");
-            find_entry(&inner, name)
-        };
-        let Some(entry) = maybe_entry else {
-            if missing_contract_binding {
-                return Err(anyhow!("No binding for contract: {name}"));
-            }
-            return Err(anyhow!("function not found: {name}"));
-        };
-        let func = entry.func.clone();
-        let outputs = entry.outputs.clone();
-        let mut value = if let Some(component_meta) = entry.metadata.as_ref() {
-            let prepared = sanitize_component_input(input, component_meta);
-            func.call(ctx, prepared, meta)?
-        } else {
-            func.call(ctx, input, meta)?
-        };
-        if let Some(allowed) = outputs {
-            value = enforce_outputs(value, allowed.as_ref());
-        }
-        Ok(value)
+        ctx.call(name, input, meta)
     }
 
     pub fn context(&self) -> Context {
@@ -236,11 +214,7 @@ fn enforce_outputs(value: Value, allowed: &[String]) -> Value {
     }
 }
 
-fn sanitize_component_input(value: Value, metadata: &ComponentMetadata) -> Value {
-    if metadata.inputs.is_empty() {
-        return value;
-    }
-
+fn sanitize_component_input(value: Value, metadata: &ComponentMetadata) -> (Value, Value) {
     let original = match value {
         Value::Object(map) => map,
         other => {
@@ -251,15 +225,16 @@ fn sanitize_component_input(value: Value, metadata: &ComponentMetadata) -> Value
     };
 
     let mut filtered = Map::new();
-    filtered.insert(RAW_INPUT_KEY.to_string(), Value::Object(original.clone()));
-    filtered.insert("value".to_string(), Value::Object(original.clone()));
-
     for key in &metadata.inputs {
         let entry = original.get(key).cloned().unwrap_or(Value::Null);
         filtered.insert(key.clone(), entry);
     }
 
-    Value::Object(filtered)
+    (Value::Object(filtered), Value::Object(original))
+}
+
+fn needs_raw_snapshot(name: &str) -> bool {
+    matches!(name, "lcod://tooling/sanitizer/probe@0.1.0")
 }
 
 fn find_entry(inner: &RegistryInner, name: &str) -> (Option<Arc<ComponentEntry>>, bool) {
@@ -291,7 +266,9 @@ pub struct Context {
     http_hosts: HttpHostManager,
     registry_scope_stack: Vec<RegistrySnapshot>,
     log_tag_stack: Vec<Map<String, Value>>,
+    raw_input_stack: Vec<Value>,
     spec_captured_logs: Vec<Value>,
+    spec_logs_truncated: bool,
     cancellation: Arc<AtomicBool>,
 }
 
@@ -305,7 +282,9 @@ impl Context {
             http_hosts: HttpHostManager::new(),
             registry_scope_stack: Vec::new(),
             log_tag_stack: Vec::new(),
+            raw_input_stack: Vec::new(),
             spec_captured_logs: Vec::new(),
+            spec_logs_truncated: false,
             cancellation,
         }
     }
@@ -324,12 +303,39 @@ impl Context {
         };
         let func = entry.func.clone();
         let outputs = entry.outputs.clone();
-        let mut value = if let Some(component_meta) = entry.metadata.as_ref() {
-            let prepared = sanitize_component_input(input, component_meta);
-            func.call(self, prepared, meta)?
+        let metadata = entry.metadata.clone();
+
+        let mut prepared_input = input;
+        let mut raw_snapshot = None;
+        if let Some(component_meta) = metadata.as_ref() {
+            let (sanitized, raw) = sanitize_component_input(prepared_input, component_meta);
+            prepared_input = sanitized;
+            if needs_raw_snapshot(name) {
+                raw_snapshot = Some(raw);
+            }
+        }
+
+        let pushed_raw = if let Some(raw_value) = raw_snapshot {
+            self.push_raw_input(raw_value);
+            true
         } else {
-            func.call(self, input, meta)?
+            false
         };
+
+        let mut value = match func.call(self, prepared_input, meta) {
+            Ok(result) => result,
+            Err(err) => {
+                if pushed_raw {
+                    self.pop_raw_input();
+                }
+                return Err(err);
+            }
+        };
+
+        if pushed_raw {
+            self.pop_raw_input();
+        }
+
         if let Some(allowed) = outputs {
             value = enforce_outputs(value, allowed.as_ref());
         }
@@ -430,7 +436,9 @@ impl Context {
     pub fn fork(&self) -> Context {
         let mut cloned = Context::new(self.registry.clone(), self.cancellation.clone());
         cloned.log_tag_stack = self.log_tag_stack.clone();
+        cloned.raw_input_stack = self.raw_input_stack.clone();
         cloned.spec_captured_logs = self.spec_captured_logs.clone();
+        cloned.spec_logs_truncated = self.spec_logs_truncated;
         cloned
     }
 
@@ -485,11 +493,36 @@ impl Context {
     }
 
     pub fn push_spec_log(&mut self, entry: Value) {
+        const SPEC_LOG_LIMIT: usize = 1024;
+        if self.spec_captured_logs.len() >= SPEC_LOG_LIMIT {
+            if !self.spec_logs_truncated {
+                let notice = json!({
+                    "level": "warn",
+                    "message": "Spec log buffer truncated",
+                    "tags": { "component": "kernel", "scope": "registry-scope", "reason": "log-overflow" }
+                });
+                self.spec_captured_logs.push(notice);
+                self.spec_logs_truncated = true;
+            }
+            return;
+        }
         self.spec_captured_logs.push(entry);
     }
 
     pub fn spec_captured_logs(&self) -> &[Value] {
         &self.spec_captured_logs
+    }
+
+    pub fn push_raw_input(&mut self, value: Value) {
+        self.raw_input_stack.push(value);
+    }
+
+    pub fn pop_raw_input(&mut self) {
+        self.raw_input_stack.pop();
+    }
+
+    pub fn current_raw_input(&self) -> Option<&Value> {
+        self.raw_input_stack.last()
     }
 }
 

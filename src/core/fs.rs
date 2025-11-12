@@ -1,7 +1,7 @@
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use std::{env, fs};
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use base64::Engine as _;
@@ -16,6 +16,7 @@ const CONTRACT_WRITE: &str = "lcod://contract/core/fs/write-file@1";
 const CONTRACT_WRITE_ALT: &str = "lcod://contract/core/fs/write_file@1";
 const CONTRACT_LIST: &str = "lcod://contract/core/fs/list-dir@1";
 const CONTRACT_LIST_ALT: &str = "lcod://contract/core/fs/list_dir@1";
+const CONTRACT_STAT: &str = "lcod://contract/core/fs/stat@1";
 
 #[cfg(windows)]
 fn from_unix_path(input: &str) -> PathBuf {
@@ -54,6 +55,7 @@ pub fn register_fs(registry: &Registry) {
     registry.register(CONTRACT_WRITE_ALT, write_file_contract);
     registry.register(CONTRACT_LIST, list_dir_contract);
     registry.register(CONTRACT_LIST_ALT, list_dir_contract);
+    registry.register(CONTRACT_STAT, stat_contract);
 }
 
 fn value_as_str<'a>(value: &'a Value, key: &'static str) -> Result<&'a str> {
@@ -273,6 +275,56 @@ fn walk_dir(
     }
 
     Ok(())
+}
+
+fn stat_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let path_str = value_as_str(&input, "path")?;
+    let follow_symlinks = optional_bool(&input, "followSymlinks", true);
+
+    let mut target = from_unix_path(path_str);
+    if !target.is_absolute() {
+        let cwd = env::current_dir().context("unable to determine current directory")?;
+        target = cwd.join(target);
+    }
+    let normalized = to_unix_path(&target);
+
+    let metadata = if follow_symlinks {
+        fs::metadata(&target)
+    } else {
+        fs::symlink_metadata(&target)
+    };
+
+    let mut map = Map::new();
+    map.insert("path".to_string(), Value::String(normalized));
+
+    match metadata {
+        Ok(meta) => {
+            map.insert("exists".to_string(), Value::Bool(true));
+            let file_type = meta.file_type();
+            map.insert("isFile".to_string(), Value::Bool(file_type.is_file()));
+            map.insert("isDirectory".to_string(), Value::Bool(file_type.is_dir()));
+            map.insert("isSymlink".to_string(), Value::Bool(file_type.is_symlink()));
+            map.insert("size".to_string(), Value::Number(meta.len().into()));
+            if let Ok(modified) = meta.modified() {
+                if let Ok(ts) = to_rfc3339(modified) {
+                    map.insert("mtime".to_string(), Value::String(ts));
+                }
+            }
+            if let Ok(created) = meta.created() {
+                if let Ok(ts) = to_rfc3339(created) {
+                    map.insert("ctime".to_string(), Value::String(ts));
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            map.insert("exists".to_string(), Value::Bool(false));
+        }
+        Err(err) => {
+            return Err(anyhow!("unable to stat path: {}: {err}", target.display()));
+        }
+    }
+
+    Ok(Value::Object(map))
 }
 
 #[cfg(test)]

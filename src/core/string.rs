@@ -4,10 +4,14 @@ use serde_json::{json, Value};
 use crate::registry::{Context, Registry};
 
 const CONTRACT_FORMAT: &str = "lcod://contract/core/string/format@1";
+const CONTRACT_SPLIT: &str = "lcod://contract/core/string/split@1";
+const CONTRACT_TRIM: &str = "lcod://contract/core/string/trim@1";
 const AXIOM_FORMAT: &str = "lcod://axiom/string/format@1";
 
 pub fn register_string(registry: &Registry) {
     registry.register(CONTRACT_FORMAT, string_format_contract);
+    registry.register(CONTRACT_SPLIT, string_split_contract);
+    registry.register(CONTRACT_TRIM, string_trim_contract);
     registry.set_binding(AXIOM_FORMAT, CONTRACT_FORMAT);
 }
 
@@ -165,6 +169,69 @@ fn string_format_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>
     Ok(result)
 }
 
+fn string_split_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let text = input
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("`text` must be a string"))?;
+    let separator = input
+        .get("separator")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("`separator` must be a string"))?;
+    if separator.is_empty() {
+        return Err(anyhow!("`separator` must not be empty"));
+    }
+    let trim = input
+        .get("trim")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let remove_empty = input
+        .get("removeEmpty")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+
+    let mut iterator: Vec<String> = text.split(separator).map(|s| s.to_string()).collect();
+    if let Some(limit) = limit {
+        if iterator.len() > limit {
+            iterator.truncate(limit);
+        }
+    }
+
+    let mut segments = Vec::new();
+    for mut segment in iterator {
+        if trim {
+            segment = segment.trim().to_string();
+        }
+        if remove_empty && segment.is_empty() {
+            continue;
+        }
+        segments.push(segment);
+    }
+
+    Ok(json!({ "segments": segments }))
+}
+
+fn string_trim_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let text = input
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("`text` must be a string"))?;
+    let mode = input
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("both");
+    let trimmed = match mode {
+        "start" => text.trim_start().to_string(),
+        "end" => text.trim_end().to_string(),
+        _ => text.trim().to_string(),
+    };
+    Ok(json!({ "value": trimmed }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +252,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(res["value"], json!("Hello Ada"));
+    }
+
+    #[test]
+    fn split_honours_trim_and_limit() {
+        let registry = Registry::new();
+        register_string(&registry);
+        let mut ctx = registry.context();
+        let res = string_split_contract(
+            &mut ctx,
+            json!({
+                "text": "a, b, ,c",
+                "separator": ",",
+                "trim": true,
+                "removeEmpty": true
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(res["segments"], json!(["a", "b", "c"]));
+    }
+
+    #[test]
+    fn trim_supports_modes() {
+        let registry = Registry::new();
+        register_string(&registry);
+        let mut ctx = registry.context();
+        let both = string_trim_contract(
+            &mut ctx,
+            json!({ "text": "  hello  " }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(both["value"], json!("hello"));
+        let start = string_trim_contract(
+            &mut ctx,
+            json!({ "text": "  hello  ", "mode": "start" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(start["value"], json!("hello  "));
     }
 }

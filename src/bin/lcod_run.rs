@@ -14,7 +14,7 @@ use dirs::home_dir;
 use flate2::read::GzDecoder;
 use hex;
 use humantime::format_duration;
-use lcod_kernel_rs::compose::{parse_compose, run_compose, Step, RAW_INPUT_KEY};
+use lcod_kernel_rs::compose::{parse_compose, run_compose, Step};
 use lcod_kernel_rs::compose_contracts::register_compose_contracts;
 use lcod_kernel_rs::core::register_core;
 use lcod_kernel_rs::flow::register_flow;
@@ -453,8 +453,7 @@ fn materialize_component_from_entry(
     manifest_base: Option<&Path>,
     cache_root: &Path,
 ) -> Result<ComposeHandle> {
-    if let Some(local_path) = resolve_local_manifest_file(manifest_base, entry.compose.as_deref())
-    {
+    if let Some(local_path) = resolve_local_manifest_file(manifest_base, entry.compose.as_deref()) {
         return Ok(ComposeHandle::local(local_path));
     }
 
@@ -498,7 +497,10 @@ fn materialize_component_from_entry(
     }
 }
 
-fn resolve_local_manifest_file(base_dir: Option<&Path>, entry_path: Option<&str>) -> Option<PathBuf> {
+fn resolve_local_manifest_file(
+    base_dir: Option<&Path>,
+    entry_path: Option<&str>,
+) -> Option<PathBuf> {
     let base = base_dir?;
     let rel = entry_path?;
     let cleaned = rel.trim_start_matches("./");
@@ -590,9 +592,10 @@ fn workspace_manifest_candidates() -> Vec<PathBuf> {
     let mut files = Vec::new();
     let debug_workspace = env::var("LCOD_DEBUG_WORKSPACE").is_ok();
 
+    let mut explicit = Vec::new();
     if let Ok(raw) = env::var("LCOD_COMPONENTS_MANIFESTS") {
         for entry in env::split_paths(&raw) {
-            push_unique_path(&mut files, entry);
+            explicit.push(entry);
         }
     }
 
@@ -603,6 +606,10 @@ fn workspace_manifest_candidates() -> Vec<PathBuf> {
         for relative in WORKSPACE_MANIFEST_FILES {
             push_unique_path(&mut files, root.join(relative));
         }
+    }
+
+    for entry in explicit {
+        push_unique_path(&mut files, entry);
     }
 
     if debug_workspace {
@@ -616,6 +623,10 @@ fn workspace_manifest_candidates() -> Vec<PathBuf> {
 
 fn workspace_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        push_unique_dir(&mut roots, cwd);
+    }
 
     if let Ok(raw) = env::var("LCOD_WORKSPACE_PATHS") {
         for entry in env::split_paths(&raw) {
@@ -631,9 +642,6 @@ fn workspace_roots() -> Vec<PathBuf> {
         for entry in env::split_paths(&raw) {
             push_unique_dir(&mut roots, entry);
         }
-    }
-    if let Ok(cwd) = env::current_dir() {
-        push_unique_dir(&mut roots, cwd);
     }
 
     roots
@@ -1498,11 +1506,7 @@ fn sanitize_input_state(
         return state;
     }
 
-    let original = state.clone();
     let mut filtered = Map::new();
-    filtered.insert(RAW_INPUT_KEY.to_string(), Value::Object(original.clone()));
-    filtered.insert("value".to_string(), Value::Object(original));
-
     for key in &meta.inputs {
         let value = state.remove(key).unwrap_or(Value::Null);
         filtered.insert(key.clone(), value);
