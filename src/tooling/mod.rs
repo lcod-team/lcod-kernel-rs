@@ -1188,6 +1188,7 @@ fn array_find_duplicates_helper(
 }
 
 fn array_append_helper(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let _clone = input.get("clone").and_then(Value::as_bool).unwrap_or(true);
     let mut result = input
         .get("items")
         .and_then(Value::as_array)
