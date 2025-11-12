@@ -160,6 +160,30 @@ fn fs_stat_reports_exists_and_missing() -> Result<()> {
 }
 
 #[test]
+fn value_clone_returns_independent_copy() -> Result<()> {
+    let mut ctx = context();
+    let original = json!({
+        "nested": [1, 2, 3],
+        "flag": true
+    });
+
+    let cloned = ctx.call(
+        "lcod://contract/core/value/clone@1",
+        json!({ "value": original }),
+        None,
+    )?;
+
+    assert_eq!(cloned["value"], json!({ "nested": [1, 2, 3], "flag": true }));
+
+    let mut mutated = cloned["value"].clone();
+    mutated["nested"].as_array_mut().unwrap()[0] = json!(99);
+    assert_eq!(cloned["value"], json!({ "nested": [1, 2, 3], "flag": true }));
+    assert_eq!(mutated["nested"], json!([99, 2, 3]));
+
+    Ok(())
+}
+
+#[test]
 fn hash_sha256_computes_digest() -> Result<()> {
     let mut ctx = context();
     let res = ctx.call(
