@@ -7,6 +7,7 @@ use crate::registry::{Context, Registry};
 
 pub fn register_path(registry: &Registry) {
     registry.register("lcod://axiom/path/join@1", path_join_axiom);
+    registry.register("lcod://contract/core/path/dirname@1", path_dirname_contract);
 }
 
 fn path_join_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
@@ -34,6 +35,12 @@ fn path_join_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Re
 
     let normalized: PathBuf = path.components().collect();
     Ok(json!({ "path": path_to_string(&normalized) }))
+}
+
+fn path_dirname_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let raw = input.get("path").and_then(Value::as_str).unwrap_or("");
+    let dirname = dirname_from(raw);
+    Ok(json!({ "dirname": dirname }))
 }
 
 fn push_segment(path: &mut PathBuf, segment: &str) {
@@ -76,6 +83,46 @@ pub fn path_to_string(path: &Path) -> String {
         rendered = ".".to_string();
     }
     rendered
+}
+
+fn strip_trailing_separators(value: &str) -> String {
+    let mut result = value.to_string();
+    while result.len() > 1 && (result.ends_with('/') || result.ends_with('\\')) {
+        result.pop();
+    }
+    result
+}
+
+fn dirname_from(value: &str) -> String {
+    if value.is_empty() {
+        return ".".to_string();
+    }
+    let trimmed = strip_trailing_separators(value);
+    if trimmed.is_empty() {
+        return ".".to_string();
+    }
+    if trimmed == "/" || trimmed == "\\" {
+        return trimmed;
+    }
+    if let Some(pos) = trimmed.rfind(['/', '\\']) {
+        if pos == 0 {
+            let first = trimmed.chars().next().unwrap();
+            if first == '/' || first == '\\' {
+                return first.to_string();
+            }
+            return ".".to_string();
+        }
+        let candidate = &trimmed[..pos];
+        if candidate.is_empty() {
+            if trimmed.starts_with('/') || trimmed.starts_with('\\') {
+                return trimmed.chars().next().unwrap().to_string();
+            }
+            return ".".to_string();
+        }
+        candidate.to_string()
+    } else {
+        ".".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +186,31 @@ mod tests {
         let cache =
             path_join_axiom(&mut ctx, json!({ "base": ".", "segment": ".cache" }), None).unwrap();
         assert_eq!(cache["path"], json!(".cache"));
+    }
+
+    #[test]
+    fn dirname_for_absolute_paths() {
+        let mut ctx = Registry::new().context();
+        let result = path_dirname_contract(
+            &mut ctx,
+            json!({ "path": "/tmp/workspace/file.txt" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result["dirname"], json!("/tmp/workspace"));
+
+        let root = path_dirname_contract(&mut ctx, json!({ "path": "/etc/" }), None).unwrap();
+        assert_eq!(root["dirname"], json!("/"));
+    }
+
+    #[test]
+    fn dirname_for_relative_paths() {
+        let mut ctx = Registry::new().context();
+        let missing = path_dirname_contract(&mut ctx, json!({ "path": "README.md" }), None).unwrap();
+        assert_eq!(missing["dirname"], json!("."));
+
+        let nested =
+            path_dirname_contract(&mut ctx, json!({ "path": "src/lib/mod.rs" }), None).unwrap();
+        assert_eq!(nested["dirname"], json!("src/lib"));
     }
 }

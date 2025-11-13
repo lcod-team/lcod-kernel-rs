@@ -394,6 +394,29 @@ fn string_format_renders_placeholders() -> Result<()> {
 }
 
 #[test]
+fn path_dirname_returns_parent_or_dot() -> Result<()> {
+    let mut ctx = context();
+    let abs = ctx.call(
+        "lcod://contract/core/path/dirname@1",
+        json!({ "path": "/tmp/work/log.txt" }),
+        None,
+    )?;
+    assert_eq!(abs["dirname"], json!("/tmp/work"));
+
+    let relative =
+        ctx.call("lcod://contract/core/path/dirname@1", json!({ "path": "README.md" }), None)?;
+    assert_eq!(relative["dirname"], json!("."));
+
+    let root = ctx.call(
+        "lcod://contract/core/path/dirname@1",
+        json!({ "path": "/etc/" }),
+        None,
+    )?;
+    assert_eq!(root["dirname"], json!("/"));
+    Ok(())
+}
+
+#[test]
 fn json_encode_decode_roundtrip() -> Result<()> {
     let mut ctx = context();
     let encoded = ctx.call(
