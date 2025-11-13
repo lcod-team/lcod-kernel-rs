@@ -5,9 +5,14 @@ use serde_json::{json, Value};
 
 use crate::registry::{Context, Registry};
 
+const AXIOM_PATH_JOIN: &str = "lcod://axiom/path/join@1";
+const CONTRACT_DIRNAME: &str = "lcod://contract/core/path/dirname@1";
+const CONTRACT_IS_ABSOLUTE: &str = "lcod://contract/core/path/is_absolute@1";
+
 pub fn register_path(registry: &Registry) {
-    registry.register("lcod://axiom/path/join@1", path_join_axiom);
-    registry.register("lcod://contract/core/path/dirname@1", path_dirname_contract);
+    registry.register(AXIOM_PATH_JOIN, path_join_axiom);
+    registry.register(CONTRACT_DIRNAME, path_dirname_contract);
+    registry.register(CONTRACT_IS_ABSOLUTE, path_is_absolute_contract);
 }
 
 fn path_join_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
@@ -41,6 +46,12 @@ fn path_dirname_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>)
     let raw = input.get("path").and_then(Value::as_str).unwrap_or("");
     let dirname = dirname_from(raw);
     Ok(json!({ "dirname": dirname }))
+}
+
+fn path_is_absolute_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let raw = input.get("path").and_then(Value::as_str).unwrap_or("");
+    let absolute = Path::new(raw).is_absolute() || raw.starts_with("//") || raw.starts_with("\\\\");
+    Ok(json!({ "absolute": absolute }))
 }
 
 fn push_segment(path: &mut PathBuf, segment: &str) {
@@ -212,5 +223,15 @@ mod tests {
         let nested =
             path_dirname_contract(&mut ctx, json!({ "path": "src/lib/mod.rs" }), None).unwrap();
         assert_eq!(nested["dirname"], json!("src/lib"));
+    }
+
+    #[test]
+    fn is_absolute_reports_correctly() {
+        let mut ctx = Registry::new().context();
+        let abs = path_is_absolute_contract(&mut ctx, json!({ "path": "/tmp" }), None).unwrap();
+        assert_eq!(abs["absolute"], json!(true));
+
+        let rel = path_is_absolute_contract(&mut ctx, json!({ "path": "foo/bar" }), None).unwrap();
+        assert_eq!(rel["absolute"], json!(false));
     }
 }
