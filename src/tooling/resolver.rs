@@ -162,6 +162,12 @@ fn resolve_dependencies_contract(
     if sources.is_empty() {
         sources = collect_sources(raw_config.get("sources"));
     }
+    let spec_sources = collect_sources(input.get("specSources"));
+    if !spec_sources.is_empty() {
+        let mut merged = spec_sources;
+        merged.extend(sources);
+        sources = merged;
+    }
 
     let root_descriptor = input
         .get("rootDescriptor")
@@ -185,6 +191,9 @@ fn resolve_dependencies_contract(
     let dependency_ids = parse_requires(&root_descriptor);
     let mut dependency_nodes = Vec::new();
     for dep_id in dependency_ids {
+        if should_skip_dependency(&dep_id) {
+            continue;
+        }
         let node = resolve_dependency_node(
             &dep_id,
             &project_root,
@@ -287,6 +296,9 @@ fn resolve_dependency_node(
     let child_ids = parse_requires(&descriptor);
     let mut children = Vec::new();
     for child_id in child_ids {
+        if should_skip_dependency(&child_id) {
+            continue;
+        }
         let node = resolve_dependency_node(&child_id, project_root, sources, visited, cache)?;
         children.push(node);
     }
@@ -389,6 +401,14 @@ fn parse_requires(descriptor: &Value) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn should_skip_dependency(dep_id: &str) -> bool {
+    dep_id.starts_with("lcod://contract/")
+        || dep_id.starts_with("lcod://core/")
+        || dep_id.starts_with("lcod://flow/")
+        || dep_id.starts_with("lcod://impl/")
+        || dep_id.starts_with("lcod://axiom/")
 }
 
 fn compute_integrity(text: &str) -> String {

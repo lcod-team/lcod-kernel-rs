@@ -8,11 +8,13 @@ use crate::registry::{Context, Registry};
 const AXIOM_PATH_JOIN: &str = "lcod://axiom/path/join@1";
 const CONTRACT_DIRNAME: &str = "lcod://contract/core/path/dirname@1";
 const CONTRACT_IS_ABSOLUTE: &str = "lcod://contract/core/path/is_absolute@1";
+const CONTRACT_TO_FILE_URL: &str = "lcod://contract/core/path/to_file_url@1";
 
 pub fn register_path(registry: &Registry) {
     registry.register(AXIOM_PATH_JOIN, path_join_axiom);
     registry.register(CONTRACT_DIRNAME, path_dirname_contract);
     registry.register(CONTRACT_IS_ABSOLUTE, path_is_absolute_contract);
+    registry.register(CONTRACT_TO_FILE_URL, path_to_file_url_contract);
 }
 
 fn path_join_axiom(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
@@ -50,8 +52,25 @@ fn path_dirname_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>)
 
 fn path_is_absolute_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
     let raw = input.get("path").and_then(Value::as_str).unwrap_or("");
-    let absolute = Path::new(raw).is_absolute() || raw.starts_with("//") || raw.starts_with("\\\\");
+    let absolute = Path::new(raw).is_absolute()
+        || raw.starts_with("//")
+        || raw.starts_with("\\\\");
     Ok(json!({ "absolute": absolute }))
+}
+
+fn path_to_file_url_contract(_ctx: &mut Context, input: Value, _meta: Option<Value>) -> Result<Value> {
+    let raw = input.get("path").and_then(Value::as_str).unwrap_or("");
+    if raw.is_empty() {
+        return Ok(json!({ "url": Value::Null }));
+    }
+    let mut normalized = raw.replace('\\', "/");
+    while normalized.contains("/./") {
+        normalized = normalized.replace("/./", "/");
+    }
+    if !normalized.ends_with('/') {
+        normalized.push('/');
+    }
+    Ok(json!({ "url": format!("file://{}", normalized) }))
 }
 
 fn push_segment(path: &mut PathBuf, segment: &str) {
@@ -233,5 +252,15 @@ mod tests {
 
         let rel = path_is_absolute_contract(&mut ctx, json!({ "path": "foo/bar" }), None).unwrap();
         assert_eq!(rel["absolute"], json!(false));
+    }
+
+    #[test]
+    fn to_file_url_normalizes_path() {
+        let mut ctx = Registry::new().context();
+        let res = path_to_file_url_contract(&mut ctx, json!({ "path": "C:/tmp/./work" }), None).unwrap();
+        assert_eq!(res["url"], json!("file://C:/tmp/work/"));
+
+        let empty = path_to_file_url_contract(&mut ctx, json!({ "path": "" }), None).unwrap();
+        assert_eq!(empty["url"], Value::Null);
     }
 }

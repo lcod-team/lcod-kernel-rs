@@ -417,6 +417,25 @@ fn path_dirname_returns_parent_or_dot() -> Result<()> {
 }
 
 #[test]
+fn path_to_file_url_normalizes_path() -> Result<()> {
+    let mut ctx = context();
+    let res = ctx.call(
+        "lcod://contract/core/path/to_file_url@1",
+        json!({ "path": "C:/tmp/./work" }),
+        None,
+    )?;
+    assert_eq!(res["url"], json!("file://C:/tmp/work/"));
+
+    let empty = ctx.call(
+        "lcod://contract/core/path/to_file_url@1",
+        json!({ "path": "" }),
+        None,
+    )?;
+    assert_eq!(empty["url"], Value::Null);
+    Ok(())
+}
+
+#[test]
 fn json_encode_decode_roundtrip() -> Result<()> {
     let mut ctx = context();
     let encoded = ctx.call(

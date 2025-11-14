@@ -559,6 +559,7 @@ fn register_resolver_helpers(registry: &Registry) {
     );
 
     let defs = build_helper_definitions();
+    let debug_registry = std::env::var("LCOD_DEBUG_REGISTRY").is_ok();
     for def in defs {
         let compose_path = Arc::new(def.compose_path);
         let context = Arc::new(def.context);
@@ -571,7 +572,7 @@ fn register_resolver_helpers(registry: &Registry) {
             let compose_path = Arc::clone(&compose_path);
             let context = Arc::clone(&context);
             let metadata_handle = metadata.clone();
-            if id_arc.contains("testkit") {
+            if debug_registry && id_arc.contains("testkit") {
                 let meta_flag = metadata_handle.is_some();
                 let source = compose_path.display().to_string();
                 eprintln!(

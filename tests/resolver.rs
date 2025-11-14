@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::{Mutex, Once, OnceLock};
 use tempfile::tempdir;
 
 fn locate_spec_repo() -> Option<PathBuf> {
@@ -31,6 +31,11 @@ fn locate_spec_repo() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn resolver_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn resolver_compose_candidates() -> Vec<PathBuf> {
@@ -295,6 +300,7 @@ fn new_registry() -> Registry {
 
 #[test]
 fn resolver_compose_handles_local_path_dependency() {
+    let _test_guard = resolver_test_lock().lock().unwrap();
     let registry = new_registry();
     let mut ctx = registry.context();
     let temp = tempdir().unwrap();
@@ -331,11 +337,22 @@ fn resolver_compose_handles_local_path_dependency() {
         return;
     };
     let output_path = project.join("lcp.lock");
-    let state = json!({
+    let Some(spec_root) = locate_spec_repo() else {
+        eprintln!("SPEC_REPO_PATH missing and lcod-spec checkout not found; skipping resolver_compose_handles_local_path_dependency");
+        return;
+    };
+    let spec_root_string = spec_root.to_string_lossy().to_string();
+    let prev_spec = env::var("SPEC_REPO_PATH").ok();
+    env::set_var("SPEC_REPO_PATH", &spec_root_string);
+
+    let mut state = json!({
         "projectPath": project,
         "configPath": config_path,
         "outputPath": output_path,
     });
+    if let Some(map) = state.as_object_mut() {
+        map.insert("specRoot".to_string(), JsonValue::String(spec_root_string));
+    }
 
     let result = run_compose(&mut ctx, &compose, state).expect("compose run");
     let warnings: Vec<String> = result
@@ -368,7 +385,11 @@ fn resolver_compose_handles_local_path_dependency() {
         "lcod://example/app@0.1.0"
     );
     let deps = component["dependencies"].as_array().unwrap();
-    assert_eq!(deps.len(), 1);
+    assert!(
+        deps.len() == 1,
+        "unexpected dependency set: {}",
+        lock_raw
+    );
     let dep_entry = &deps[0];
     assert_eq!(
         dep_entry["id"].as_str().unwrap(),
@@ -379,10 +400,17 @@ fn resolver_compose_handles_local_path_dependency() {
         dep_entry["source"]["reference"].as_str().unwrap(),
         "lcod://example/dep@0.1.0"
     );
+
+    if let Some(value) = prev_spec {
+        env::set_var("SPEC_REPO_PATH", value);
+    } else {
+        env::remove_var("SPEC_REPO_PATH");
+    }
 }
 
 #[test]
 fn resolver_compose_handles_git_dependency() {
+    let _test_guard = resolver_test_lock().lock().unwrap();
     let registry = new_registry();
     let mut ctx = registry.context();
     let temp = tempdir().unwrap();
@@ -450,27 +478,51 @@ fn resolver_compose_handles_git_dependency() {
         return;
     };
     let output_path = project.join("lcp.lock");
-    let state = json!({
+    let Some(spec_root) = locate_spec_repo() else {
+        eprintln!("SPEC_REPO_PATH missing and lcod-spec checkout not found; skipping resolver_compose_handles_git_dependency");
+        return;
+    };
+    let spec_root_string = spec_root.to_string_lossy().to_string();
+    let prev_spec = env::var("SPEC_REPO_PATH").ok();
+    env::set_var("SPEC_REPO_PATH", &spec_root_string);
+
+    let mut state = json!({
         "projectPath": project,
         "configPath": config_path,
         "outputPath": output_path,
     });
+    if let Some(map) = state.as_object_mut() {
+        map.insert("specRoot".to_string(), JsonValue::String(spec_root_string));
+    }
 
     run_compose(&mut ctx, &compose, state).expect("compose run");
     let lock_raw = fs::read_to_string(&output_path).unwrap();
     let lock_doc: toml::Value = lock_raw.parse().unwrap();
     let component = &lock_doc["components"].as_array().unwrap()[0];
-    let dep_entry = component["dependencies"].as_array().unwrap()[0].clone();
+    let deps = component["dependencies"].as_array().unwrap();
+    assert!(
+        deps.len() == 1,
+        "unexpected dependency set: {}",
+        lock_raw
+    );
+    let dep_entry = deps[0].clone();
     assert_eq!(dep_entry["source"]["type"].as_str().unwrap(), "registry");
     assert_eq!(
         dep_entry["source"]["reference"].as_str().unwrap(),
         "lcod://example/git@0.1.0"
     );
     std::env::remove_var("LCOD_CACHE_DIR");
+
+    if let Some(value) = prev_spec {
+        env::set_var("SPEC_REPO_PATH", value);
+    } else {
+        env::remove_var("SPEC_REPO_PATH");
+    }
 }
 
 #[test]
 fn load_sources_resolver_fixture_catalogues() {
+    let _test_guard = resolver_test_lock().lock().unwrap();
     let Some(spec_root) = locate_spec_repo() else {
         eprintln!(
             "SPEC_REPO_PATH missing and lc0d-spec checkout not found; skipping load_sources_resolver_fixture_catalogues"
